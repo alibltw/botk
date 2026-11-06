@@ -1,0 +1,17 @@
+{
+  "name": "BotPlus",
+  "author": "DarkBot Plugin",
+  "version": "2.0.0",
+  "minVersion": "1.131.0",
+  "supportedVersion": "1.133.0",
+  "basePackage": "com.botplus",
+  "features": [
+    "com.botplus.BotPlus",
+    "com.botplus.combat.Combat",
+    "com.botplus.rsb.Rsb",
+    "com.botplus.steal.NpcSteal",
+    "com.botplus.repair.Repair",
+    "com.botplus.locator.EnemyLocator",
+    "com.botplus.defense.Defense"
+  ]
+}

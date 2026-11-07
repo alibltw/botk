@@ -271,6 +271,7 @@ public final class Settings {
         v.AVOID_AHEAD = c.HAREKET.AVOID_AHEAD;
         v.AVOID_ANGLE = c.HAREKET.AVOID_ANGLE;
         v.AVOID_ONLY_AGGRESSIVE = c.HAREKET.AVOID_ONLY_AGGRESSIVE;
+        v.PASS_PASSIVE = c.HAREKET.PASS_PASSIVE;
         v.BOX_MAX_DIST = c.KUTU.MAX_DIST;
         v.BOX_WAY = c.KUTU.WAY;
 
@@ -315,11 +316,18 @@ public final class Settings {
             if (cb.PENDULUM != null) vc.PENDULUM = cb.PENDULUM;
             if (cb.WAVE != null) vc.WAVE = cb.WAVE;
             if (cb.HARBOR != null) vc.HARBOR = cb.HARBOR;
+            if (cb.CRESCENT != null) vc.CRESCENT = cb.CRESCENT;
+            if (cb.LOCK != null) {
+                if (cb.LOCK.WIDTH == null) cb.LOCK.WIDTH = BotPlusConfig.LockWidth.MEDIUM;
+                if (cb.LOCK.SWING == null) cb.LOCK.SWING = BotPlusConfig.LockSwing.MEDIUM;
+                vc.LOCK = cb.LOCK;
+            }
             if (cb.CLAW != null) vc.CLAW = cb.CLAW;
             vc.OPTIONS = cb.OPTIONS != null ? cb.OPTIONS : EnumSet.of(BotPlusConfig.CombatOption.PRE_LOCK);
             vc.FINISH_FIRST = cb.FINISH_FIRST;
             vc.CHASE = cb.FLEE != null && cb.FLEE.CHASE;
             vc.CHASE_DROP = cb.FLEE == null ? 20 : cb.FLEE.DROP;
+            vc.NO_HIT_MIN = cb.RANGE == null ? 60 : cb.RANGE.NO_HIT_MIN;
         } else {
             vc.CHASE = false;
         }
@@ -415,6 +423,8 @@ public final class Settings {
         oe.OUTRUN_OPTS = copy(c.DUSMAN.ATLAT.SECENEK, BotPlusConfig.OutrunOpt.class);
         oe.START_OPTS = copy(c.DUSMAN.BASLANGIC, BotPlusConfig.StartOpt.class);
         oe.OWN_MODE = c.DUSMAN.OWN == null ? BotPlusConfig.OwnMode.SAME : c.DUSMAN.OWN;
+        oe.ATTACK_STAY = c.DUSMAN.REMEMBER_ATTACK_STAY;
+        oe.PLUS = c.DUSMAN.GELISMIS == null ? new CoreConfig.EscapePlusSet() : c.DUSMAN.GELISMIS;
         // PvP ve Push Korumasi: kendi alt eklentileri (kapaliysa Saldir Kac gibi, push kontrolu yok).
         oe.PVP = com.botplus.pvp.Pvp.view(pvp);
         oe.PVP_ON = pvp != null;

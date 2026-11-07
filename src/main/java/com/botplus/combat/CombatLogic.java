@@ -68,6 +68,8 @@ public final class CombatLogic {
     static final double RUN_ON_SEC = 6, RUN_OFF_SEC = 6; // degisim (5,5 sn) varistan once biter
     /** DarkBot'un dusuk canli / kacan NPC'de kullandigi en buyuk menzil. */
     static final double LOW_HP_RADIUS = 600;
+    /** Can %25 alti / kacan NPC: menzilin bu orani (2.5.0: sabit 600 yerine menzile gore). */
+    static final double LOW_HP_SCALE = 0.94;
     /** Lazer siniri ogrenildiyse saldiri mesafesi bundan bu kadar icerde. */
     static final double LASER_MARGIN = 25;
     /** Ilk vurus: lazer sinirinin bu kadar icinde (lazer yetisir yetismez ates). */

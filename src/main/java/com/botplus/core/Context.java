@@ -200,9 +200,19 @@ public final class Context {
         if (name == null) return null;
         try {
             for (Player p : ents.getPlayers())
-                if (p.getEntityInfo() != null && name.equals(p.getEntityInfo().getUsername())) return firmKnown(p);
+                if (p.getEntityInfo() != null && name.equals(p.getEntityInfo().getUsername())) {
+                    Boolean k = firmKnown(p);
+                    if (k != null) return k;
+                }
         } catch (RuntimeException ignored) {
         }
+        // Gorus disinda: ates ederken (gorunurken) kendi sirketi oldugu dogrulandiysa o bilgi kullanilir. Eskiden
+        // gorunmeyen kendi sirketi saldiran "sirketi bilinmiyor" sayilip dusman olarak 10 dk hatirlaniyordu
+        // (17:36 TommyShelby, Kendi Sirketi = Yok Say iken).
+        for (java.util.Map.Entry<Integer, String> e : attackerName.entrySet())
+            if (name.equals(e.getValue()) && ownIds.contains(e.getKey())) return true;
+        for (java.util.Map.Entry<Integer, String> e : trackName.entrySet())
+            if (name.equals(e.getValue()) && ownIds.contains(e.getKey())) return true;
         return null;
     }
 
@@ -250,6 +260,9 @@ public final class Context {
             ps.threat = s -> s instanceof Player && attackedBy((Player) s, ESCAPE_MEMORY_MS) && !ignoredOwn((Player) s);
             ps.inCharge = () -> now() - plusInChargeAt < 1000;
             ps.options = () -> this.config.ON_ENEMY.ESCAPE_OPTS;
+            ps.plus = () -> this.config.ON_ENEMY.PLUS;
+            ps.critical = () -> this.config.ON_ENEMY.HP > 0 && heroHp() <= this.config.ON_ENEMY.HP / 100.0;
+            ps.following = () -> threatFollowing.getAsBoolean();
             // Harita degisim olayi icin acik kayit (DarkBot zaten kaydediyorsa yeniden kaydedilir, cift olmaz).
             try {
                 api.requireAPI(eu.darkbot.api.managers.EventBrokerAPI.class).registerListener(ps);
@@ -838,12 +851,74 @@ public final class Context {
                 || ((p.isAttacking(hero) || attackedBy(p, THREAT_MEMORY_MS)) && !isFriend(p)));
     }
 
-    /** Hatirlanan olduren bu noktaya yakin mi (null: yok). */
+    /** Hatirlanan olduren bu noktaya yakin mi (null: yok). Saldir'da kacilmayanlar ve Yok Say'daki kendi sirketi sayilmaz. */
     public Player killerNear(Locatable l, double dist) {
         if (killers.isEmpty()) return null;
         for (Player p : ents.getPlayers())
-            if (p.isValid() && isKiller(p) && p.distanceTo(l) < dist) return p;
+            if (p.isValid() && isKiller(p) && p.distanceTo(l) < dist && !attackStays(Log.name(p)) && !ignoredOwn(p)) return p;
         return null;
+    }
+
+    /**
+     * Saldir secili, PvP Plus acik ve "Saldir'da Hatirlanandan Kacma" aciksa hatirlanan oyuncudan kacilmaz, yanindaki
+     * NPC / sinyal yasaklanmaz (karsilik PvP'de). Push Korumasi olme sinirindaki oyuncu haric (ondan yine kacilir).
+     */
+    public boolean attackStays(String name) {
+        try {
+            BotPlusConfig.OnEnemy oe = config.ON_ENEMY;
+            if (oe == null || !oe.ATTACK_STAY || oe.MODE != BotPlusConfig.OnEnemyMode.ATTACK || !oe.PVP_ON) return false;
+            return name == null || !push.feared(name);
+        } catch (RuntimeException e) {
+            return false;
+        }
+    }
+
+    /** Hizli Can Kaybi suruyor mu (Escape kurar; PvP bu durumda saldiriyi birakir). */
+    public java.util.function.BooleanSupplier rapidLossNow = () -> false;
+    /** Takip Edilirse Atla: kacilan dusman pesimizde mi (Escape kurar). */
+    public java.util.function.BooleanSupplier threatFollowing = () -> true;
+
+    /** Kacis modu Kac / Hizla Atlat ve "Yetenekleri Kacisa Sakla" aciksa Defense EMP / hiz yetenegini ilk atista harcamaz. */
+    public boolean saveForEscape() {
+        try {
+            BotPlusConfig.OnEnemy oe = config.ON_ENEMY;
+            return oe.PLUS.SAVE_SKILLS && selfMode.getAsBoolean()
+                    && (oe.MODE == BotPlusConfig.OnEnemyMode.OUTRUN || oe.MODE == BotPlusConfig.OnEnemyMode.ESCAPE);
+        } catch (RuntimeException e) {
+            return false;
+        }
+    }
+
+    /** Locator'in kendi hatirlama listesinden silme (Locator kurar). */
+    public java.util.function.Consumer<String> forgetKiller = n -> {
+    };
+
+    /**
+     * Oyuncu unutulur (PvP'de oldurduk): saldiran / takip / hatirlanan kayitlari silinir. Eskiden olen oyuncu "ates
+     * kesti" sayilip hatirlaniyor, olum yerindeki NPC'ler "hatirlanan dusman yakininda" diye secilmiyordu.
+     */
+    public void forgetPlayer(int id, String name) {
+        lastAttackBy.remove(id);
+        attackerAt.remove(id);
+        attackerMap.remove(id);
+        attackerName.remove(id);
+        trackUntil.remove(id);
+        trackOwn.remove(id);
+        trackSeen.remove(id);
+        trackSeenAt.remove(id);
+        trackSeenMap.remove(id);
+        trackName.remove(id);
+        if (name != null) {
+            killers.remove(name);
+            killerSeen.remove(name);
+            killerSeenAt.remove(name);
+            killerSeenMap.remove(name);
+            try {
+                forgetKiller.accept(name);
+            } catch (RuntimeException ignored) {
+            }
+        }
+        threatReady = false;
     }
 
 
@@ -899,6 +974,7 @@ public final class Context {
         int map = mapIdNow();
         for (java.util.Map.Entry<String, Location> e : killerSeen.entrySet()) {
             if (e.getValue().distanceTo(l) >= dist || killerSeenMap.getOrDefault(e.getKey(), map) != map) continue;
+            if (attackStays(e.getKey())) continue;
             long ago = (now() - killerSeenAt.getOrDefault(e.getKey(), 0L)) / 1000;
             return e.getKey() + " (son gorulme " + ago + " sn once, " + (int) e.getValue().distanceTo(l) + ")";
         }
@@ -933,7 +1009,7 @@ public final class Context {
             // eskiden 2000 siniri vardi: dusman 2000'in hemen disina cikinca bulucu ayni sinyale geri donuyordu).
             if (p.isAttacking(hero)) return p;
             // Son 30 sn icinde bize ates etmis dusman 3000 icindeyse hala tehdit (bir an ates kesince donulmez).
-            if ((attackedBy(p, THREAT_MEMORY_MS) && d < 3000) || (isKiller(p) && d < 2500)) {
+            if ((attackedBy(p, THREAT_MEMORY_MS) && d < 3000) || (isKiller(p) && d < 2500 && !attackStays(Log.name(p)))) {
                 if (d < nd) {
                     nd = d;
                     near = p;
@@ -1034,11 +1110,13 @@ public final class Context {
     public long trackMs(boolean own) {
         try {
             BotPlusConfig.Killer k = config.PROTECT.KILLER;
-            if (own) return Math.max(1, k == null ? 1 : k.OWN_MINUTES) * 60_000L;
-            if (k == null || !k.ENABLED) return 2 * 60_000L;
-            return Math.max(1, k.MINUTES) * 60_000L;
+            // Dusmani Hatirla kapali (hicbiri secili degil): kimse takip edilmez / hatirlanmaz (eskiden 2 dk / en az
+            // 1 dk takip suruyordu, ayar kapatilamiyordu). 0 dakika: o grup hic hatirlanmaz.
+            if (k == null || !k.ENABLED) return 0;
+            if (own) return Math.max(0, k.OWN_MINUTES) * 60_000L;
+            return Math.max(0, k.MINUTES) * 60_000L;
         } catch (RuntimeException e) {
-            return 2 * 60_000L;
+            return 0;
         }
     }
 
@@ -1151,6 +1229,37 @@ public final class Context {
         Log.i("GUVENLIK", "tehlikeli bolge " + Log.loc(at) + " (" + (int) r + ") " + ms / 60_000.0 + " dk yasak: " + why);
     }
 
+    /** Atlatma Sonrasi Mesafe: atlatilan dusman (id), son yeri, yaricap ve bitis. */
+    private int keepId = -1;
+    private String keepName;
+    private Location keepAt;
+    private double keepR;
+    private long keepUntil;
+    private int keepMap = -1;
+
+    /** Atlatilan dusmanin (gorunurken canli yeri, gorunmezse son yeri) r icindeki NPC / sinyal ms boyunca secilmez. */
+    public void keepAwayFrom(int id, String name, Location at, double r, long ms) {
+        keepId = id;
+        keepName = name;
+        keepAt = at;
+        keepR = r;
+        keepUntil = now() + ms;
+        keepMap = mapIdNow();
+        Log.i("DUSMAN", "atlatma sonrasi: " + name + " yanindaki NPC'ler " + ms / 1000 + " sn secilmeyecek (" + (int) r + ")");
+    }
+
+    private String keepZone(Locatable l) {
+        if (keepId < 0 || now() >= keepUntil || mapIdNow() != keepMap) return null;
+        Location at = keepAt;
+        for (Player p : ents.getPlayers())
+            if (p.getId() == keepId && p.isValid()) {
+                at = Location.of(p.getX(), p.getY());
+                keepAt = at;
+            }
+        if (at == null || at.distanceTo(l) >= keepR) return null;
+        return "atlatilan dusman " + keepName + " yakininda (" + (keepUntil - now()) / 1000 + " sn)";
+    }
+
     /** Nokta tehlikeli bolgede mi (nedeni), degilse null. */
     public String inDangerZone(Locatable l) {
         if (l == null) return null;
@@ -1159,6 +1268,8 @@ public final class Context {
         for (Zone z : dangerZones)
             if (z.until > now && z.map == map && z.at.distanceTo(l) < z.r)
                 return z.why + " (" + (z.until - now) / 1000 + " sn)";
+        String keep = keepZone(l);
+        if (keep != null) return keep;
         // Saldirani Takip: sabit bolge yerine saldiranin kendisi (gorunurken canli, gorunmezse 60 sn son yeri).
         // "Devam Et" seciliyse saldirandan uzak durulmaz (dovus engellenmez).
         if (config.ON_ENEMY.MODE == BotPlusConfig.OnEnemyMode.CONTINUE) return null;
@@ -1224,6 +1335,35 @@ public final class Context {
         return n.isValid() && !isFake(n) && n.getInfo() != null && !n.getInfo().getShouldKill();
     }
 
+    /**
+     * Saldirmayan NPC'ler (sabit liste): yanindan gecince saldirmayanlar. Loglarda 700 icinde onlarca kez goruldu, hic
+     * ates etmedi (Boss Kristallon 99, Boss Lordakium 95, UberLordakium 49, Uber Saboteur 37, Uber Barracuda 36 ...).
+     * Talon ailesinin hepsi. Streuner ve Battleray listede yok (vuruyorlar). Ad sadece harf / rakam, kucuk harf.
+     */
+    private static final String[] PASSIVE_NPCS = {"bosskristallon", "bosslordakium", "uberlordakium", "ubersaboteur",
+            "uberbarracuda", "uberannihilator"};
+
+    /** Saldirmayan NPC'lerden Kacinma: tik acik, NPC listede ve bize ates etmiyor / nisan almiyorsa true. */
+    private boolean passivePass(Npc n) {
+        if (!config.PASS_PASSIVE || n.getInfo() == null) return false;
+        String key = passiveKey(n.getInfo().getName());
+        boolean listed = key.contains("talon");
+        for (String s : PASSIVE_NPCS) if (key.equals(s)) listed = true;
+        if (!listed) return false;
+        try {
+            if (n.isAttacking(hero) || n.isAiming(hero)) return false;
+        } catch (RuntimeException ignored) {
+        }
+        return true;
+    }
+
+    private static String passiveKey(String name) {
+        if (name == null) return "";
+        StringBuilder b = new StringBuilder();
+        for (char c : name.toLowerCase(java.util.Locale.ROOT).toCharArray()) if (Character.isLetterOrDigit(c)) b.append(c);
+        return b.toString();
+    }
+
     /** Saldirgan sayilir mi: bize ates ediyor / bize donuk ya da tabloda "Pasif" degil (bilgisi yoksa saldirgan). */
     private boolean aggressive(Npc n) {
         if (n.isAttacking(hero)) return true;
@@ -1285,6 +1425,7 @@ public final class Context {
             // Sadece hedef noktanin tam ustundeki NPC atlanir (eskiden 900: hedef yanindaki NPC'den hic kacinilmiyordu).
             if (!unlisted(n) || n.distanceTo(dest) < 300) continue;
             if (onlyAggro && !aggressive(n)) continue;
+            if (passivePass(n)) continue; // Saldirmayan NPC'lerden Kacinma
             if (along < blockAlong) {
                 blockAlong = along;
                 block = n;
@@ -1305,6 +1446,7 @@ public final class Context {
             if (n == block || n.distanceTo(block) > CLUSTER_R) continue;
             if (segDist(hx, hy, dest, n) > avoidR + 500 || !unlisted(n)) continue;
             if (onlyAggro && !aggressive(n)) continue;
+            if (passivePass(n)) continue; // Saldirmayan NPC'lerden Kacinma
             cluster.add(n);
         }
         double farAlong = blockAlong;
@@ -1992,6 +2134,30 @@ public final class Context {
     }
 
     /** Harita kenarina uzaklik (kenar disi radyasyonlu bolge). Harita bilinmiyorsa cok buyuk doner. */
+    /** Harita ortasi (sinirlar bilinmiyorsa null). */
+    public Location mapCenter() {
+        try {
+            eu.darkbot.api.game.other.Area.Rectangle r = star.getCurrentMapBounds();
+            if (r == null || r.getWidth() <= 0) return null;
+            return Location.of((r.getX() + r.getX2()) / 2, (r.getY() + r.getY2()) / 2);
+        } catch (RuntimeException e) {
+            return null;
+        }
+    }
+
+    /** Koseye uzaklik: noktanin en yakin iki kenara uzakliklarindan buyugu (ikisi de kucukse kose). */
+    public double cornerDist(Locatable p) {
+        try {
+            eu.darkbot.api.game.other.Area.Rectangle r = star.getCurrentMapBounds();
+            if (r == null || r.getWidth() <= 0) return 1e9;
+            double dx = Math.min(p.getX() - r.getX(), r.getX2() - p.getX());
+            double dy = Math.min(p.getY() - r.getY(), r.getY2() - p.getY());
+            return Math.max(dx, dy);
+        } catch (RuntimeException e) {
+            return 1e9;
+        }
+    }
+
     public double edgeDist(Locatable p) {
         try {
             eu.darkbot.api.game.other.Area.Rectangle r = star.getCurrentMapBounds();

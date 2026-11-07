@@ -3,7 +3,7 @@ plugins {
 }
 
 group 'com.botplus'
-version '1.1.0'
+version '2.5.0'
 
 java {
     toolchain {

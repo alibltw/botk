@@ -75,6 +75,12 @@ public class Combat implements Configurable<Combat.Config>, eu.darkbot.api.exten
         @Option("botplus.combat.harbor")
         public BotPlusConfig.HarborSettings HARBOR = new BotPlusConfig.HarborSettings();
 
+        @Option("botplus.combat.crescent")
+        public BotPlusConfig.CrescentSettings CRESCENT = new BotPlusConfig.CrescentSettings();
+
+        @Option("botplus.combat.lock")
+        public BotPlusConfig.LockSettings LOCK = new BotPlusConfig.LockSettings();
+
         @Option("botplus.combat.claw")
         public BotPlusConfig.ClawSettings CLAW = new BotPlusConfig.ClawSettings();
 
@@ -124,5 +130,10 @@ public class Combat implements Configurable<Combat.Config>, eu.darkbot.api.exten
         /** Isaretlenince BotPlus'in eskiden degistirdigi tum NPC menzilleri asil tablo degerlerine doner (sonra kendiliginden kapanir). */
         @Option("botplus.plus.range_restore")
         public boolean RESTORE = false;
+
+        /** Vuramazsa Menzili Kis: NPC yok sayilmadan once saldiri mesafesi %10 adimlarla bu orana kadar kisilir. */
+        @Option("botplus.combat.range.no_hit_min")
+        @Number(min = 40, max = 90, step = 5)
+        public int NO_HIT_MIN = 60;
     }
 }

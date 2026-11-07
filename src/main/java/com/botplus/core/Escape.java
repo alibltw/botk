@@ -74,12 +74,85 @@ public final class Escape {
     private static final double LATE_SPEED_DIST = 600;
     /** Kacarken Portaldan Atla: portal bu yakinda, kacis yonune en fazla bu aci; bu kadar suredir hasar yoksa. */
     private static final double HOP_DIST = 2500;
-    private static final double HOP_DEG = 75;
+    private static final double HOP_DEG = 30;
     private static final long HOP_CALM_MS = 3000;
     /** Kacarken Portaldan Atla: portala gidip atlamak icin en fazla bu kadar sure (ates olmasa da kacis surer). */
     private static final long HOP_HOLD_MS = 20_000;
     /** Kacis noktasi diger takip edilen saldiranlara bundan yakin olamaz. */
     private static final double OTHER_ATTACKER_R = 2000;
+    /** Dusman hizi bizim hizimizin bu oranina ulasiyorsa hizli sayilir. */
+    private static final double FASTER_RATIO = 0.90;
+    /** Hizli Can Kaybi: olcum penceresi. */
+    private static final long RAPID_WINDOW_MS = 2000;
+    /** Kacisi Bitirme Sarti: can bunun altinda ve dusman END_HOLD_DIST icindeyse kacis bitmez (en fazla END_HOLD_MAX_MS). */
+    private static final double END_HOLD_HP = 0.5;
+    private static final double END_HOLD_DIST = 3000;
+    private static final long END_HOLD_MAX_MS = 60_000;
+    /** Arkaya Mayin: dusman bu yakinda ve yaklasiyorsa; iki mayin arasi. */
+    private static final double MINE_DIST = 2000;
+    private static final long MINE_GAP_MS = 10_000;
+    /** Kose Korumasi: harita ortasina yonelen yona puan, koseye dayanan yona ceza. */
+    private static final double CENTER_BONUS = 700;
+    private static final double CORNER_PENALTY = 900;
+
+    /** Gemi cani gecmisi (zaman, can): Hizli Can Kaybi. */
+    private final java.util.ArrayDeque<double[]> hpHist = new java.util.ArrayDeque<>();
+
+    /** Her tik: gemi cani orneklenir (BotPlus tiki cagirir). */
+    public void sampleHp() {
+        long now = Context.now();
+        double hp;
+        try {
+            if (context.repair.isDestroyed()) {
+                hpHist.clear();
+                return;
+            }
+            hp = context.heroHp();
+        } catch (RuntimeException e) {
+            return;
+        }
+        if (hpHist.isEmpty() || now - (long) hpHist.peekLast()[0] >= 150) hpHist.addLast(new double[]{now, hp});
+        while (!hpHist.isEmpty() && now - (long) hpHist.peekFirst()[0] > RAPID_WINDOW_MS) hpHist.pollFirst();
+    }
+
+    /** Son 2 sn'deki can dususu (0..1). */
+    private double hpDrop() {
+        double max = -1;
+        for (double[] h : hpHist) max = Math.max(max, h[1]);
+        return max < 0 ? 0 : Math.max(0, max - context.heroHp());
+    }
+
+    /**
+     * Hizli Can Kaybi: oyuncu ateşiyle can 2 sn'de ayardaki yuzdeden fazla dustu mu (her modda; NPC hasari sayilmaz:
+     * bize ates eden bir oyuncu olmali). Kendi sirketi Yok Say'da da gecerli (12:22 CEPNI: can 5 sn'de %92 -> %47).
+     */
+    public boolean rapidLoss() {
+        try {
+            int pct = context.config.ON_ENEMY.PLUS.RAPID_LOSS;
+            if (pct <= 0 || playerShooter() == null) return false;
+            // NPC de vuruyorsa dusus sadece oyuncudan degil: esik 15 puan yuksek (agir bossta yanlis kacis olmasin).
+            boolean npcToo = context.attackerOfHero() instanceof eu.darkbot.api.game.entities.Npc;
+            return hpDrop() >= (pct + (npcToo ? 15 : 0)) / 100.0;
+        } catch (RuntimeException e) {
+            return false;
+        }
+    }
+
+    /** Bize su an ates eden en yakin oyuncu (PET ve grup uyeleri haric; Yok Say'daki kendi sirketi dahil). */
+    private Player playerShooter() {
+        Player best = null;
+        double bd = Double.MAX_VALUE;
+        for (Player p : context.ents.getPlayers()) {
+            if (p.getId() == context.hero.getId() || !p.isValid() || context.petPlayer(p) || context.isGroupMember(p)) continue;
+            if (!p.isAttacking(context.hero)) continue;
+            double d = p.distanceTo(context.hero);
+            if (d < bd) {
+                bd = d;
+                best = p;
+            }
+        }
+        return best;
+    }
 
     private final Context context;
     private Job running;
@@ -91,7 +164,13 @@ public final class Escape {
 
     public Escape(Context context) {
         this.context = context;
-        context.escapeWanted = () -> running != null && !running.done && running.portal && running.wantNow();
+        context.escapeWanted = () -> running != null && !running.done && running.portal && (running.wantNow() || running.holdEnd());
+        context.rapidLossNow = this::rapidLoss;
+        // Takip Edilirse Atla: kacilan dusman pesimizde mi (son 3 sn ates etti ya da 1800 icinde ve yaklasiyor).
+        context.threatFollowing = () -> {
+            Job r = running;
+            return r == null || r.done || r.following();
+        };
         this.pvp = new com.botplus.pvp.PvpLogic(context);
         context.strikeLaser = () -> running != null && !running.done ? running.strikeLaser() : null;
         // Yaklasinca Hiz Yetenegi: Hizla Atlat surerken hiz turundeki Gemi Yetenegi kacis basana kadar tutulur.
@@ -119,7 +198,8 @@ public final class Escape {
 
     private boolean faster(Player p) {
         try {
-            return p.getSpeed() >= context.hero.getSpeed() * 0.97;
+            // Hiz esitligi: dusman bizim hizimizin %90'ina ulasiyorsa "hizli" (eskiden %97: 631 / 633 hizli sayilmadi).
+            return p.getSpeed() >= context.hero.getSpeed() * FASTER_RATIO;
         } catch (RuntimeException e) {
             return false;
         }
@@ -134,8 +214,21 @@ public final class Escape {
     /** Kacis gerekiyorsa isi doner. */
     public PlusModule.Job check() {
         if (running != null && !running.done) return null;
-        if (pvp.busy()) return null;
         BotPlusConfig.OnEnemy oe = context.config.ON_ENEMY;
+        // Hizli Can Kaybi: mod ne olursa olsun (Devam Et / Saldir / Yok Say dahil) saldirmadan portala kacilir.
+        if (rapidLoss()) {
+            Player s = playerShooter();
+            if (s != null) {
+                if (pvp.busy()) pvp.abort("hizli can kaybi");
+                Stats.count("hizli can kaybi");
+                Log.i("DUSMAN", Log.ship(s) + " ates ediyor: can 2 sn'de " + Log.pct(hpDrop()) + " dustu (Hizli Can Kaybi %"
+                        + oe.PLUS.RAPID_LOSS + "), saldirmadan portala kaciliyor | gemi can " + Log.pct(context.heroHp()));
+                running = new Job(s, true, false);
+                context.releaseAttack();
+                return running;
+            }
+        }
+        if (pvp.busy()) return null;
         if (oe.MODE == BotPlusConfig.OnEnemyMode.ATTACK && oe.PVP_ON) {
             PlusModule.Job j = pvp.check(oe.PVP);
             if (j != null) return j;
@@ -143,6 +236,16 @@ public final class Escape {
         Player t = attacker();
         boolean pre = false;
         if (t == null) {
+            // Kendi Sirketi = Yok Say: kendi sirketinden saldirandan kacilmaz; ama can Kacis Cani'nin altina indiyse
+            // (olmek uzere) yine portala kacilir (12:22 CEPNI: Yok Say iken hic kacilmadan patlandi).
+            Player own = playerShooter();
+            if (own != null && context.ignoredOwn(own) && hpLow()) {
+                Log.i("DUSMAN", Log.ship(own) + " (kendi sirketi, Yok Say) ates ediyor ve can " + Log.pct(context.heroHp())
+                        + " <= %" + oe.HP + ": portala kaciliyor");
+                running = new Job(own, true, false);
+                context.releaseAttack();
+                return running;
+            }
             t = approaching(oe);
             if (t == null) return null;
             pre = true;
@@ -175,7 +278,7 @@ public final class Escape {
                 : "Hizla Atlat secili";
         if (!portal && oe.FASTER_PORTAL && faster(t)) {
             portal = true;
-            why = "dusman bizden hizli (" + t.getSpeed() + " >= " + context.hero.getSpeed() + ")";
+            why = "dusman hizi bizimkine yakin (" + t.getSpeed() + " / " + context.hero.getSpeed() + ", %90 ve ustu)";
         }
         Stats.count(pre ? "onceden kacis" : "dusmandan kacis");
         Log.i("DUSMAN", Log.ship(t) + (pre ? " yaklasiyor, ates etmeden kaciliyor (daha once saldirdi, " : " ates ediyor (")
@@ -373,6 +476,46 @@ public final class Escape {
                     || Context.now() < hopUntil;
         }
 
+        /**
+         * Kacisi Bitirme Sarti: can %50 altinda ve kacilan dusman 3000 icindeyse kacis bitmez (en fazla 60 sn).
+         * 15:29 AVSAR: kacis can %16'da, dusman 1236 uzaktayken "ates etmiyor" diye bitti, haritada tamire baslandi.
+         */
+        boolean holdEnd() {
+            if (!context.config.ON_ENEMY.PLUS.END_HOLD) return false;
+            long now = Context.now();
+            Player p = threat;
+            if (p == null || !p.isValid()) return false;
+            boolean hold = context.heroHp() < END_HOLD_HP && p.distanceTo(context.hero) < END_HOLD_DIST;
+            if (!hold) return false;
+            if (holdSince == 0) holdSince = now;
+            if (now - holdSince > END_HOLD_MAX_MS) return false; // en fazla 60 sn uzatilir
+            if (hold) Log.every("eschold", 5000, "DUSMAN", "kacis bitmiyor: can " + Log.pct(context.heroHp()) + " < %50 ve "
+                    + threatName + " " + (int) p.distanceTo(context.hero) + " uzakta (< 3000)");
+            return hold;
+        }
+
+        private long holdSince;
+
+        /** Takip Edilirse Atla: dusman son 3 sn ates etti ya da 1800 icinde ve yaklasiyor. */
+        boolean following() {
+            if (context.attackedBy(threatId, 3000)) return true;
+            Player p = refresh();
+            if (p == null || !p.isValid()) return false;
+            long now = Context.now();
+            sampleApproach(p, now); // portal kacisinda tick() calismaz: yaklasma burada da olculur
+            double d = p.distanceTo(context.hero);
+            return d < 1800 && now - approachAt < 2000;
+        }
+
+        /** Dusman yaklasiyor mu: 500 ms'de bir uzaklik olculur (15'ten fazla azaldiysa yaklasiyor). */
+        private void sampleApproach(Player p, long now) {
+            if (p == null || (approachSampleAt != 0 && now - approachSampleAt < 500)) return;
+            double dd = p.distanceTo(context.hero);
+            if (approachLast >= 0 && dd < approachLast - 15) approachAt = now;
+            approachLast = dd;
+            approachSampleAt = now;
+        }
+
         private Player refresh() {
             for (Player p : context.ents.getPlayers())
                 if (p.getId() == threatId) {
@@ -412,16 +555,12 @@ public final class Escape {
         public boolean tick() {
             long now = Context.now();
             Player p = refresh();
-            if (p != null && (approachSampleAt == 0 || now - approachSampleAt >= 500)) {
-                double dd = p.distanceTo(context.hero);
-                if (approachLast >= 0 && dd < approachLast - 15) approachAt = now;
-                approachLast = dd;
-                approachSampleAt = now;
-            }
+            sampleApproach(p, now);
             if (portal) {
                 // Buraya sadece kacis sistemi "guvende" deyince gelinir (portalda bekleme bitti ya da kacis yok).
-                if (now >= hopUntil && (!wantNow() || calm())) {
+                if (now >= hopUntil && (!wantNow() || calm()) && !holdEnd()) {
                     Log.i("DUSMAN", "kacis bitti (" + (now - start) / 1000 + " sn), " + threatName + " artik ates etmiyor");
+                    afterOutrun(p);
                     return false;
                 }
                 // Kacis noktasi (portal) bulunamadi: haritada uzaklasilir.
@@ -436,11 +575,20 @@ public final class Escape {
                 toPortal("can " + Log.pct(context.heroHp()) + " < %" + context.config.ON_ENEMY.HP);
                 return true;
             }
+            if (rapidLoss()) {
+                toPortal("hizli can kaybi: 2 sn'de " + Log.pct(hpDrop()));
+                return true;
+            }
             if (p == null || calm()) {
                 if (p == null && wantNow()) {
                     outrun(null, now); // gorus disina cikti ama yeni ates etti: bir sure daha uzaklas
                     return true;
                 }
+                if (p != null && holdEnd()) {
+                    outrun(p, now); // can dusuk ve dusman yakin: atlatma bitmez
+                    return true;
+                }
+                afterOutrun(p);
                 Log.i("DUSMAN", "dusman atlatildi (" + (now - start) / 1000 + " sn)"
                         + (p == null ? ", gorus disinda" : ", " + (int) p.distanceTo(context.hero) + " uzakta"));
                 return false;
@@ -459,7 +607,7 @@ public final class Escape {
                 return true;
             }
             if (!empGrace && oe.FASTER_PORTAL && faster(p)) {
-                toPortal("dusman bizden hizli (" + p.getSpeed() + " >= " + context.hero.getSpeed() + ")");
+                toPortal("dusman hizi bizimkine yakin (" + p.getSpeed() + " / " + context.hero.getSpeed() + ", %90 ve ustu)");
                 return true;
             }
             // Dusman ates ederek surekli yaklasiyorsa (atlatilamiyor) portala gecilir.
@@ -636,6 +784,7 @@ public final class Escape {
                             + " / biz " + context.hero.getSpeed()));
                 }
             }
+            mineBack(p, now);
             if (out != null) {
                 // Yaklasinca Hiz Yetenegi acikken uzun yol hizi basilmaz (yetenek dusman yetisince basilir).
                 if (!oo.contains(BotPlusConfig.OutrunOpt.LATE_SPEED))
@@ -720,7 +869,7 @@ public final class Escape {
                     double run = runway(a);
                     // Koseye / kenara dayanan yon secilmez (kisa yol: dusman orada yetisiyordu).
                     if (run < MIN_RUNWAY) continue;
-                    double score = Math.min(run, 5000) - deg * 25 + (deg > 0 && sign == side ? 400 : 0);
+                    double score = Math.min(run, 5000) - deg * 25 + (deg > 0 && sign == side ? 400 : 0) + cornerScore(c, run);
                     if (score > bestScore) {
                         bestScore = score;
                         best = c;
@@ -826,6 +975,52 @@ public final class Escape {
                 }
             }
             return true;
+        }
+
+        /**
+         * Kose Korumasi: harita ortasina yonelen yon puan alir; yolun ucu (en fazla 3000) iki kenara birden yakinsa
+         * (kose) ceza. 15:29: gemi sol alt koseye kacti, "tam ters yol harita kenarinda" deyip dusmana yakalandi.
+         */
+        private double cornerScore(Location c, double run) {
+            if (!context.config.ON_ENEMY.PLUS.CORNER_GUARD) return 0;
+            Location center = context.mapCenter();
+            if (center == null) return 0;
+            double hx = context.hero.getX(), hy = context.hero.getY();
+            double dir = Math.atan2(c.getY() - hy, c.getX() - hx);
+            double toCenter = Math.atan2(center.getY() - hy, center.getX() - hx);
+            double score = CENTER_BONUS * Math.cos(dir - toCenter);
+            double far = Math.min(run, 3000);
+            Location end = Location.of(hx + Math.cos(dir) * far, hy + Math.sin(dir) * far);
+            if (context.cornerDist(end) < 1500) score -= CORNER_PENALTY;
+            return score;
+        }
+
+        /** Arkaya Mayin: dusman MINE_DIST icinde ve yaklasiyorsa yavaslatici mayin (10 sn'de bir). */
+        private long mineAt;
+
+        private void mineBack(Player p, long now) {
+            if (p == null || !context.config.ON_ENEMY.PLUS.MINE_BACK || now - mineAt < MINE_GAP_MS) return;
+            if (p.distanceTo(context.hero) > MINE_DIST || now - approachAt > 1500) return;
+            mineAt = now;
+            try {
+                eu.darkbot.api.game.items.ItemUseResult r = context.items.useItem(eu.darkbot.api.game.items.SelectableItem.Mine.SLM_01, 1000);
+                if (r == eu.darkbot.api.game.items.ItemUseResult.SUCCESS) {
+                    Stats.count("arkaya mayin");
+                    Log.i("DUSMAN", "Arkaya Mayin: " + threatName + " " + (int) p.distanceTo(context.hero) + " uzakta ve yaklasiyor, SLM-01 birakildi");
+                } else Log.every("escmine", 15_000, "DUSMAN", "Arkaya Mayin basilamadi (" + r + ")");
+            } catch (RuntimeException e) {
+                Log.every("escmine", 15_000, "DUSMAN", "Arkaya Mayin basilamadi (" + e + ")");
+            }
+        }
+
+        /** Atlatma Sonrasi Mesafe: atlatilan dusmanin yanindaki NPC'ler bir sure secilmez. */
+        private void afterOutrun(Player p) {
+            int sec = context.config.ON_ENEMY.PLUS.AFTER_SEC;
+            if (sec <= 0) return;
+            double r = Math.max(2500, context.config.ON_ENEMY.DIST * 1.5);
+            Location at = p != null ? Location.of(p.getX(), p.getY()) : lastFrom != null ? lastFrom : context.attackerSeenAt(threatId);
+            if (at == null) return;
+            context.keepAwayFrom(threatId, threatName, at, r, sec * 1000L);
         }
 
         @Override

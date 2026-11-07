@@ -54,6 +54,9 @@ public class BotPlusConfig {
     @Option("botplus.avoid_aggressive")
     public boolean AVOID_ONLY_AGGRESSIVE = true;
 
+    /** Saldirmayan NPC'lerden Kacinma: sabit listedeki NPC'lerin yanindan dolasilmaz (kod gorunumu). */
+    public transient boolean PASS_PASSIVE = true;
+
     @Option("botplus.box_max_dist")
     @Number(min = 500, max = 20000, step = 250)
     public int BOX_MAX_DIST = 3000;
@@ -98,6 +101,10 @@ public class BotPlusConfig {
         if (COMBAT.PENDULUM == null) COMBAT.PENDULUM = new PendulumSettings();
         if (COMBAT.WAVE == null) COMBAT.WAVE = new WaveSettings();
         if (COMBAT.HARBOR == null) COMBAT.HARBOR = new HarborSettings();
+        if (COMBAT.CRESCENT == null) COMBAT.CRESCENT = new CrescentSettings();
+        if (COMBAT.LOCK == null) COMBAT.LOCK = new LockSettings();
+        if (COMBAT.LOCK.WIDTH == null) COMBAT.LOCK.WIDTH = LockWidth.MEDIUM;
+        if (COMBAT.LOCK.SWING == null) COMBAT.LOCK.SWING = LockSwing.MEDIUM;
         if (COMBAT.CLAW == null) COMBAT.CLAW = new ClawSettings();
         if (COMBAT.CLAW.ORDER == null) COMBAT.CLAW.ORDER = ClawOrder.LOW_HP;
         if (COMBAT.ARC == null) COMBAT.ARC = new ArcSettings();
@@ -153,7 +160,7 @@ public class BotPlusConfig {
         STEAL.NPC_HP = clamp(STEAL.NPC_HP, 0, 100);
         STEAL.HERO_HP = clamp(STEAL.HERO_HP, 0, 100);
         STEAL.CHASE_SEC = clamp(STEAL.CHASE_SEC, 1, 120);
-        if (PROTECT.KILLER != null) PROTECT.KILLER.MINUTES = clamp(PROTECT.KILLER.MINUTES, 1, 60);
+        if (PROTECT.KILLER != null) PROTECT.KILLER.MINUTES = clamp(PROTECT.KILLER.MINUTES, 0, 60);
     }
 
     private static int clamp(int v, int min, int max) {
@@ -360,7 +367,7 @@ public class BotPlusConfig {
         public boolean ENABLED = false;
 
         @Option("botplus.killer.minutes")
-        @Number(min = 1, max = 60, step = 1)
+        @Number(min = 0, max = 60, step = 1)
         public int MINUTES = 10;
 
         /** Kendi sirketinden saldiran / olduren icin hatirlama suresi (dk; BotPlus menusunden). */
@@ -506,8 +513,12 @@ public class BotPlusConfig {
         public transient PendulumSettings PENDULUM = new PendulumSettings();
         public transient WaveSettings WAVE = new WaveSettings();
         public transient HarborSettings HARBOR = new HarborSettings();
+        public transient CrescentSettings CRESCENT = new CrescentSettings();
+        public transient LockSettings LOCK = new LockSettings();
         public transient ClawSettings CLAW = new ClawSettings();
         public transient boolean OPENING_GUARD = false, RICOCHET = false;
+        /** Vuramazsa Menzili Kis: en alt saldiri mesafesi (menzilin %'si). */
+        public transient int NO_HIT_MIN = 60;
 
         @Option("botplus.chase.enabled")
         public boolean CHASE = false;
@@ -828,11 +839,11 @@ public class BotPlusConfig {
 
     /** Combat Plus: dovus hareketi. */
     @Configuration("botplus.combat.style")
-    public enum CombatStyle { ORBIT, PENDULUM, WAVE, HARBOR }
+    public enum CombatStyle { ORBIT, PENDULUM, WAVE, HARBOR, CRESCENT, BOOMERANG, RANGE_LOCK }
 
     /** Ilk Vurus: her yeni NPC'ye nasil girilir. */
     @Configuration("botplus.combat.first_hit")
-    public enum FirstHit { NORMAL, EAGLE, VORTEX }
+    public enum FirstHit { NORMAL, EAGLE, VORTEX, LANCE, DIVER, BLIND_SPOT, BRAKE }
 
     /** Kartal Pencesi: bayragi tutulan NPC'lerden once hangisi kesilir. */
     @Configuration("botplus.combat.claw.order")
@@ -882,8 +893,54 @@ public class BotPlusConfig {
     /** Liman ayarlari. */
     public static class HarborSettings {
         @Option("botplus.combat.harbor.max")
-        @Number(min = 1000, max = 10000, step = 250)
-        public int MAX_DIST = 3000;
+        @Number(min = 1000, max = 20000, step = 500)
+        public int MAX_DIST = 6000;
+    }
+
+    /** Yarim Ay ayarlari. */
+    public static class CrescentSettings {
+        /** Yayin yarim acisi: NPC'nin onunde +-bu kadar derece gidip gelinir. */
+        @Option("botplus.combat.crescent.half")
+        @Number(min = 30, max = 90, step = 5)
+        public int HALF = 60;
+    }
+
+    /** Menzil Kilidi: bant genisligi ve salinim. */
+    @Configuration("botplus.combat.lock.width")
+    public enum LockWidth {
+        NARROW(1.01, 1.04), MEDIUM(1.01, 1.08), WIDE(0.98, 1.10);
+        public final double lo, hi;
+
+        LockWidth(double lo, double hi) {
+            this.lo = lo;
+            this.hi = hi;
+        }
+    }
+
+    @Configuration("botplus.combat.lock.swing")
+    public enum LockSwing {
+        NARROW(40), MEDIUM(70), WIDE(100);
+        public final int deg;
+
+        LockSwing(int deg) {
+            this.deg = deg;
+        }
+    }
+
+    /** Menzil Kilidi ayarlari. */
+    public static class LockSettings {
+        @Option("botplus.combat.lock.width")
+        @Dropdown
+        public LockWidth WIDTH = LockWidth.MEDIUM;
+
+        /** Bandin dis ucu en fazla menzilin bu %'si (olculen vurus mesafesini de asmaz). */
+        @Option("botplus.combat.lock.max_out")
+        @Number(min = 100, max = 115, step = 1)
+        public int MAX_OUT = 108;
+
+        @Option("botplus.combat.lock.swing")
+        @Dropdown
+        public LockSwing SWING = LockSwing.MEDIUM;
     }
 
     /** Kartal Pencesi: birden fazla NPC'nin bayragi alinip sirayla kesilir. */
@@ -1039,6 +1096,10 @@ public class BotPlusConfig {
         /** PvP alt eklentisi acik mi (kapaliysa Saldir, Kac gibi). */
         public boolean PVP_ON = false;
         public PushSettings PUSH = new PushSettings();
+        /** Saldir'da hatirlanandan kacma (BotPlus menusu). */
+        public boolean ATTACK_STAY = true;
+        /** Gelismis Kacis (BotPlus menusu). */
+        public CoreConfig.EscapePlusSet PLUS = new CoreConfig.EscapePlusSet();
     }
 
     /** Kac Secenekleri: dusmandan portala kacarken portal secimi. */

@@ -35,11 +35,19 @@ public final class PvpLogic {
         return pvp != null && !pvp.done;
     }
 
+    /** Saldiri disaridan birakilir (Hizli Can Kaybi): 30 sn yeni saldiri yok. */
+    public void abort(String why) {
+        if (pvp == null || pvp.done) return;
+        pvp.done = true;
+        pvpBlockedUntil = Context.now() + 30_000;
+        Log.i("SALDIR", pvp.name + " birakildi: " + why);
+    }
+
     /** Uygun dusman varsa saldiri isi, yoksa null. */
     public PlusModule.Job check(BotPlusConfig.PvpSettings s) {
         Player target = pvpCandidate(s);
         if (target == null) return null;
-        Stats.count("com/botplus/pvp");
+        Stats.count("pvp");
         Log.i("SALDIR", Log.ship(target) + " hedef alindi (" + (int) target.distanceTo(context.hero) + " uzakta) | kime: "
                 + s.WHO + " | gemi can " + Log.pct(context.heroHp()));
         pvp = new PvpJob(target);
@@ -197,6 +205,8 @@ public final class PvpLogic {
                     Stats.count("pvp oldurme");
                     Log.i("SALDIR", name + " olduruldu (son can " + Log.pct(lastHp) + ") | " + (now - start) / 1000 + " sn");
                     context.push.killed(name);
+                    // Oldurulen oyuncu unutulur: olum yerindeki NPC'ler "hatirlanan dusman yakininda" diye yok sayilmasin.
+                    context.forgetPlayer(id, name);
                     return false;
                 }
                 if (!own && s.CHASE && lastLoc != null && now - lastSeenAt < s.CHASE_SEC * 1000L) {
@@ -213,6 +223,10 @@ public final class PvpLogic {
             }
             if (context.heroHp() < s.RETREAT_HP / 100.0) {
                 retreat("can < %" + s.RETREAT_HP);
+                return false;
+            }
+            if (context.rapidLossNow.getAsBoolean()) {
+                retreat("hizli can kaybi (2 sn'de can sert dustu)");
                 return false;
             }
             if (s.CROWD && enemiesNear() >= 2) {

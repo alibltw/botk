@@ -73,8 +73,13 @@ public final class DeathLog {
 
     /** Gemi patladi: son 30 sn ozeti loga (OLUM). Ornekler silinir. */
     public void report(String killer, long deathAt) {
+        report(killer, deathAt, false);
+    }
+
+    /** npcKiller: olduren NPC (Push Korumasi'na yazilmaz, push sadece oyuncular icin). */
+    public void report(String killer, long deathAt, boolean npcKiller) {
         try {
-            if (killer != null && !killer.isEmpty()) context.push.died(killer);
+            if (killer != null && !killer.isEmpty() && !npcKiller) context.push.died(killer);
         } catch (RuntimeException ignored) {
         }
         // Olumden sonraki ornekler (canlandiktan sonra alinmis) atilir; olumden 10 sn'den eski ornekler bu olumu

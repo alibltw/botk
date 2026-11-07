@@ -30,6 +30,10 @@ public final class RsbLogic {
 
     private static final long DROP_MS = 1500;
     private static final long VERIFY_MS = 800;
+    /** Lazer henuz RSB'ye gecmediyse dogrulama en fazla bu kadar kez, bu kadar ertelenir. */
+    private static final int VERIFY_EXTENDS = 2;
+    private static final long VERIFY_EXTEND_MS = 700;
+    private int verifyExtends;
     private static final long FAIL_WINDOW_MS = 30_000;
     private static final long OFF_MS = 20_000;
     private static final long OUT_RANGE_MS = 1500;
@@ -244,6 +248,7 @@ public final class RsbLogic {
                 verifyDue = now + VERIFY_MS + Math.max(0, ping());
                 verifyId = npc.getId();
                 verifyTotal = total(npc);
+                verifyExtends = 0;
                 firedSeen = false;
                 qtyFired = false;
                 qtyAtSwitch = rsbQty();
@@ -277,6 +282,14 @@ public final class RsbLogic {
             loaded = context.hero.getLaser() == rsbLaser();
         } catch (RuntimeException e) {
             loaded = false;
+        }
+        // Cephane degisimi henuz gemiye yansimadi (lazer hala normal): hata sayilmaz, dogrulama kisa sure ertelenir.
+        // Eskiden 95 "dogrulanamadi"nin 90'inda lazer hala UCB_100'du: RSB hic yuklenmeden hata sayiliyordu.
+        if (!loaded && !qtyFired && !firedSeen && verifyExtends < VERIFY_EXTENDS) {
+            verifyExtends++;
+            verifyDue = now + VERIFY_EXTEND_MS + Math.max(0, ping());
+            Log.d("RSB", "RSB henuz yuklenmedi (lazer " + context.hero.getLaser() + "), dogrulama ertelendi (" + verifyExtends + ")");
+            return;
         }
         boolean dropped = loaded && t >= 0 && verifyTotal >= 0 && t < verifyTotal;
         // Sadece gercek kanit: hasar ya da atis (RSB bekleme suresine girdi). "RSB secili ve saldiriyor" yetmez.

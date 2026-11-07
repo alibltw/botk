@@ -68,7 +68,7 @@ import java.util.Set;
 public class BotPlus implements Module, Behavior, Configurable<CoreConfig>, NpcFlags<BotPlusFlag>, GearSelector,
         LaserSelector, ShipModeSelector, Drawable, Listener, Installable {
 
-    public static final String VERSION = "2.4.0";
+    public static final String VERSION = "2.5.0";
     private static final int COMBAT_PET_DIST = 1500;
     private static final long BOX_WAIT_MS = 1200;
     private static final long BOX_COLLECT_MS = 6000;
@@ -463,7 +463,7 @@ public class BotPlus implements Module, Behavior, Configurable<CoreConfig>, NpcF
                 + " || cal=" + c.STEAL.ENABLED + " kimden=" + c.STEAL.FROM + " NPC>=%" + c.STEAL.NPC_HP + " yontem=" + c.STEAL.ACTION
                 + " dusman=%" + c.STEAL.ENEMY_HP + " kovala=" + c.STEAL.CHASE_SEC + "sn gemi>=%" + c.STEAL.HERO_HP
                 + " cephane=" + c.STEAL.AMMO + " calarken_PET=" + c.STEAL.PET + " hangi=" + c.STEAL.WHICH
-                + " || dusman_saldirinca=" + c.ON_ENEMY.MODE + " kacis_can=%" + c.ON_ENEMY.HP + " atlat=" + c.ON_ENEMY.DIST + "/"
+                + " || dusman_saldirinca=" + c.ON_ENEMY.MODE + " kendi_sirketi=" + c.ON_ENEMY.OWN_MODE + " kacis_can=%" + c.ON_ENEMY.HP + " atlat=" + c.ON_ENEMY.DIST + "/"
                 + c.ON_ENEMY.CALM_SEC + "sn/hizliysa_portal=" + c.ON_ENEMY.FASTER_PORTAL + "/emp=" + c.ON_ENEMY.EMP + "@" + c.ON_ENEMY.EMP_DIST
                 + " kac=" + c.ON_ENEMY.ESCAPE_OPTS + " atlat_sec=" + c.ON_ENEMY.OUTRUN_OPTS + " baslangic=" + c.ON_ENEMY.START_OPTS + " akilli_rsb=" + (c.RSB != null && c.RSB.SMART)
                 + " || dusmani_hatirla=" + (c.PROTECT.KILLER.ENABLED ? (c.REMEMBER_KILLERS ? "patlatan" : "") + (c.REMEMBER_ATTACKERS ? "+saldiran" : "") : "kapali") + " sure=" + c.PROTECT.KILLER.MINUTES + "dk"
@@ -782,6 +782,7 @@ public class BotPlus implements Module, Behavior, Configurable<CoreConfig>, NpcF
             if (!context.config.ENABLED) return;
             boolean alive = !context.repair.isDestroyed() && context.heroLoaded();
             context.trackAttackers();
+            escape.sampleHp();
             Module tm = context.bot.getModule();
             context.deaths.sample("gecici modul: " + (tm == null ? "-" : tm.getClass().getSimpleName()));
             // Captcha / baglanti kesme modulunde EMP, Insta-Shield ve RSB'ye basilmaz (cikis / captcha bozulmasin).
@@ -850,6 +851,7 @@ public class BotPlus implements Module, Behavior, Configurable<CoreConfig>, NpcF
         // Gemiyi surmeyen ozellikler (Defense, RSB) hangi modul secili olursa olsun calisir.
         boolean alive = !context.repair.isDestroyed() && context.heroLoaded();
         context.trackAttackers();
+        escape.sampleHp(); // Hizli Can Kaybi
         // Captcha / baglanti kesme modulunde EMP, Insta-Shield ve RSB'ye basilmaz (davranis modunda da).
         Module curMod = context.bot.getModule();
         String curName = curMod == null ? "" : curMod.getClass().getSimpleName().toLowerCase(Locale.ROOT);
@@ -1024,7 +1026,7 @@ public class BotPlus implements Module, Behavior, Configurable<CoreConfig>, NpcF
         // hic bakilmiyor, tamir kacisi dusman kacisina donmuyordu): ayni kacis sistemi kesintisiz devam eder.
         boolean loggingOut = running.job() instanceof Refresh.Job && ((Refresh.Job) running.job()).loggingOut();
         boolean stealing = steal.firingAtEnemy(running);
-        if (self && p < PlusModule.P_ESCAPE && ((!loggingOut && !stealing) || escape.hpLow())) job = escape.check();
+        if (self && p < PlusModule.P_ESCAPE && ((!loggingOut && !stealing) || escape.hpLow() || escape.rapidLoss())) job = escape.check();
         if (job != null) {
             String from = running.job().name();
             int map = running.startMap();

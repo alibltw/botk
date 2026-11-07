@@ -176,6 +176,10 @@ public final class Locator {
     public Locator(Context context) {
         this.context = context;
         context.deadSpot = this::deadRaw;
+        context.forgetKiller = n -> {
+            if (killers.remove(n) != null) Log.i("DUSMAN", n + " artik hatirlanmiyor (PvP'de olduruldu)");
+            killerOwn.remove(n);
+        };
     }
 
     /** Harita degisti: onceki haritanin olu / bos / reddedilen yerleri silinir. */
@@ -372,14 +376,25 @@ public final class Locator {
         Stats.count("olum");
         Log.i("OLUM", "gemi patladi, olduren: " + (name == null || name.isEmpty() ? "bilinmiyor" : name)
                 + " | " + (Context.now() - t.toEpochMilli()) / 1000 + " sn once");
-        context.deaths.report(name, t.toEpochMilli());
+        boolean npcKiller = name != null && !name.isEmpty() && isNpcName(name);
+        // NPC'ye olum Push Korumasi'na yazilmaz (eskiden "Boss Devolarium tarafindan olundu: 1. kez" yaziliyordu).
+        context.deaths.report(name, t.toEpochMilli(), npcKiller);
         if (!context.config.PROTECT.KILLER.ENABLED || !context.config.REMEMBER_KILLERS || name == null || name.isEmpty()) return;
-        if (isNpcName(name)) {
+        if (npcKiller) {
             Log.i("DUSMAN", name + " bir NPC, hatirlanmiyor (sadece oyuncular hatirlanir)");
             return;
         }
-        killers.put(name, Context.now());
         Boolean ko = context.ownFirmByName(name);
+        boolean kownNow = ko != null && ko;
+        if (kownNow && context.config.ON_ENEMY.OWN_MODE == BotPlusConfig.OwnMode.IGNORE) {
+            Log.i("DUSMAN", name + " seni patlatti ama kendi sirketi (Kendi Sirketi Saldirinca = Yok Say), hatirlanmiyor");
+            return;
+        }
+        if (context.trackMs(kownNow) <= 0) {
+            Log.i("DUSMAN", name + " seni patlatti, hatirlama suresi 0 dk" + (kownNow ? " (kendi sirketi)" : "") + ": hatirlanmiyor");
+            return;
+        }
+        killers.put(name, Context.now());
         if (ko != null) killerOwn.put(name, ko); // bilinmiyorsa kaydedilmez (gorulunce yazilir)
         context.killers.add(name);
         eu.darkbot.api.game.other.Locatable at = null;
@@ -483,6 +498,7 @@ public final class Locator {
                 Boolean ko = context.ownFirmByName(name);
                 boolean own = ko != null && ko;
                 if (own && context.config.ON_ENEMY.OWN_MODE == BotPlusConfig.OwnMode.IGNORE) continue; // Yok Say
+                if (context.trackMs(own) <= 0) continue; // hatirlama suresi 0 dk: hatirlanmaz
                 killers.put(name, now);
                 if (ko != null) killerOwn.put(name, ko); // bilinmiyorsa kaydedilmez
                 Log.i("DUSMAN", name + " sana saldirdi, " + context.trackMs(own) / 60_000 + " dk hatirlanacak"
@@ -523,15 +539,50 @@ public final class Locator {
         }
     }
 
-    /** Hatirlanan olduren 2000 icindeyse ondan uzaklasilir. */
+    /** Hatirlanan oyuncu bundan yakinsa yaklasmasa da uzaklasilir. */
+    private static final double KILLER_CLOSE = 1200;
+    /** Hatirlanan oyuncu id -> {son uzaklik, olcum ani}: yaklasiyor mu. */
+    private final java.util.Map<Integer, double[]> killerDist = new java.util.HashMap<>();
+
+    /** Hatirlanan oyuncu son 2 sn icinde 150'den fazla yaklasti mi. */
+    private boolean killerClosing(Player p, double d, long now) {
+        double[] prev = killerDist.get(p.getId());
+        if (killerDist.size() > 50) killerDist.clear();
+        if (prev == null || now - (long) prev[1] > 2000) {
+            killerDist.put(p.getId(), new double[]{d, now, 0});
+            return false;
+        }
+        boolean closing = prev[0] - d > 150;
+        if (now - (long) prev[1] > 1000) killerDist.put(p.getId(), new double[]{d, now, closing ? 1 : 0});
+        return closing || prev[2] > 0;
+    }
+
+    /** Hatirlanan olduren 2000 icindeyse ve yaklasiyorsa (ya da 1200 icindeyse) ondan uzaklasilir. */
     public PlusModule.Job checkKiller() {
         if (!context.config.PROTECT.KILLER.ENABLED || killers.isEmpty() || Context.now() < killerCooldown) return null;
         long now = Context.now();
         for (Player p : context.ents.getPlayers()) {
             if (p.getId() == context.hero.getId() || !p.isValid() || p.getEntityInfo() == null) continue;
-            if (!killers.containsKey(p.getEntityInfo().getUsername())) continue;
+            String pn = p.getEntityInfo().getUsername();
+            if (!killers.containsKey(pn)) continue;
+            // Kendi Sirketi = Yok Say: kendi sirketinden hatirlanandan kacilmaz.
+            if (context.ignoredOwn(p)) continue;
+            // Saldir secili (PvP acik): hatirlanandan kacilmaz, push olme sinirindaki haric.
+            if (context.attackStays(pn)) {
+                Log.every("killerstay" + p.getId(), 30_000, "DUSMAN", Log.ship(p) + " hatirlaniyor ama Saldir secili:"
+                        + " kacilmiyor (karsilik PvP Plus'ta)");
+                continue;
+            }
             double d = context.hero.distanceTo(p);
             if (d > KILLER_DIST) continue;
+            // Hatirlanandan uzak NPC: hatirlanan oyuncu yaklasmiyor, ates etmiyor ve cok yakin degilse uzaklasilmaz;
+            // yanindaki NPC / sinyal zaten secilmez (killerZone), Combat uzaktaki NPC'ye gecer. Eskiden her gorulmede
+            // ~3 sn uzaklasiliyor, oturumda 74 kez is kesiliyordu.
+            if (!killerClosing(p, d, now) && !p.isAttacking(context.hero) && d > KILLER_CLOSE) {
+                Log.every("killerfar" + p.getId(), 15_000, "DUSMAN", Log.ship(p) + " " + (int) d
+                        + " uzakta ama yaklasmiyor: uzaklasilmiyor, yanindaki NPC'ler secilmiyor (uzaktaki NPC'ye geciliyor)");
+                continue;
+            }
             killerCooldown = now + KILLER_COOLDOWN_MS;
             context.attack.stopAttack();
             context.attack.setTarget(null);

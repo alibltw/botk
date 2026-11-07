@@ -408,6 +408,8 @@ public final class RepairLogic {
                 from = npc;
                 why = "NPC yakin " + Log.name(npc) + " " + (int) npcD + " < " + c.NPC_DIST;
             }
+            // Dusman Yakinken Portalda Tamir: can %50 altinda ve dusman oyuncu 3000 icindeyse haritada tamir edilmez,
+            // DarkBot'un portal tamirine gecilir (15:29: can %16, AVSAR 1236 uzaktayken haritada tamire baslanip patlandi).
             // NPC kovaliyor mu: 3 sn'den uzun suredir NPC ates ediyorsa kacis konfigurasyonu (tamir konfigu yavas kalir).
             if (hit instanceof Npc) {
                 if (npcHitSince == 0) npcHitSince = now;
@@ -438,6 +440,25 @@ public final class RepairLogic {
                 return false;
             }
             enemyRun = c.ENEMY_RUN_MODE && now < runUntil;
+            // Portalin dibinde tamir edilir: dusman saldirirsa kacis (oncelik daha yuksek) portaldan hemen atlar.
+            // DarkBot'un portal tamirine birakilmaz (DarkBot'un tamir siniri daha dusukse hic gitmiyordu).
+            if (context.config.ON_ENEMY.PLUS.REPAIR_PORTAL && context.heroHp() < 0.5
+                    && (hit instanceof Player || (enemy != null && enemyD < 3000))
+                    && context.safety instanceof com.botplus.core.PlusSafety) {
+                eu.darkbot.api.game.other.Location port = ((com.botplus.core.PlusSafety) context.safety).harborPortal(context.hero, 30_000);
+                Player e = hit instanceof Player ? (Player) hit : enemy;
+                // Dusman portala bizden yakinsa (aramizda) o portala gidilmez: normal haritada uzaklasma.
+                if (port != null && e != null && e.distanceTo(port) > context.hero.distanceTo(port)) {
+                    Log.every("repairportal", 5000, "TAMIR", "can " + Log.pct(context.heroHp()) + ", dusman " + Log.name(e) + " "
+                            + (int) e.distanceTo(context.hero) + " uzakta: tamir portalin dibinde " + Log.loc(port) + " ("
+                            + (int) context.hero.distanceTo(port) + ")");
+                    enemyRun = c.ENEMY_RUN_MODE;
+                    target = Location.of(port.getX(), port.getY());
+                    targetAt = now;
+                    if (context.hero.distanceTo(port) > 150) context.moveTo(target);
+                    return true;
+                }
+            }
 
             boolean reached = target == null || context.hero.distanceTo(target) < 100;
             boolean bad = target != null && (!safeEnough(target) || context.edgeDist(target) < EDGE_MIN || !context.move.canMove(target));

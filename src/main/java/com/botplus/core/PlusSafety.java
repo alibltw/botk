@@ -46,6 +46,8 @@ public class PlusSafety extends SafetyFinder {
     private static final long BLOCK_MS = 60_000;
     /** Kacis Konisi: dusmanin tam tersinden en fazla bu aci (derece). */
     private static final double CONE_DEG = 60;
+    /** Kacarken Portaldan Atla: portal kacis cizgisine en fazla bu kadar yanal uzaklikta olmali. */
+    private static final double HOP_LATERAL = 700;
     /** Varis Yarisi payi: gemi portala dusmandan en az bu oranda once varmali. */
     private static final double RACE_MARGIN = 1.1;
 
@@ -58,6 +60,26 @@ public class PlusSafety extends SafetyFinder {
      * harita disi yolculuk, captcha) DarkBot'un kendi "Dusmandan Kac" ayarlari gecerli: yedek modul kacabilsin.
      */
     public volatile BooleanSupplier inCharge = () -> true;
+    /** Gelismis Kacis ayarlari (Context kurar). */
+    public volatile Supplier<CoreConfig.EscapePlusSet> plus = CoreConfig.EscapePlusSet::new;
+    /** Can Kacis Cani'nin altinda mi (Context kurar). */
+    public volatile BooleanSupplier critical = () -> false;
+    /** Kacilan dusman pesimizde mi (Takip Edilirse Atla; Context kurar). */
+    public volatile BooleanSupplier following = () -> true;
+    /** Portal Zinciri: diger haritada bekleme suresi. */
+    private static final long CHAIN_WAIT_MS = 10_000;
+    private long jumpedAt;
+    private boolean chainLogged;
+
+    private CoreConfig.EscapePlusSet plusCfg() {
+        try {
+            CoreConfig.EscapePlusSet p = plus.get();
+            return p == null ? new CoreConfig.EscapePlusSet() : p;
+        } catch (RuntimeException e) {
+            return new CoreConfig.EscapePlusSet();
+        }
+    }
+
     /** Kac Secenekleri (Context kurar). */
     public volatile Supplier<Set<BotPlusConfig.EscapeOpt>> options = () -> EnumSet.allOf(BotPlusConfig.EscapeOpt.class);
 
@@ -132,6 +154,7 @@ public class PlusSafety extends SafetyFinder {
     @Override
     public boolean tick() {
         checkMapChange();
+        if (chainTick()) return false;
         if (charge() && opt(BotPlusConfig.EscapeOpt.PASS_JUMP)) {
             Boolean r = passTick();
             if (r != null) return r;
@@ -287,6 +310,87 @@ public class PlusSafety extends SafetyFinder {
     }
 
     /**
+     * Portal Zinciri: dusman kacisinda atladiktan sonra diger haritada dusman da gecerse (yakinda ve bize ates etmis /
+     * ediyor) hemen geri atlanir; gecmezse CHAIN_WAIT_MS beklenip donulur (dusman eski haritada portaldan uzaklassin).
+     * true: bu tik Portal Zinciri yonetti (bekleniyor).
+     */
+    private boolean chainTick() {
+        if (jumpState != JumpState.JUMPED) {
+            jumpedAt = 0;
+            chainLogged = false;
+            return false;
+        }
+        if (!charge() || escape != Escaping.ENEMY || !plusCfg().PORTAL_CHAIN || prevMap == null) return false;
+        long now = System.currentTimeMillis();
+        if (jumpedAt == 0) jumpedAt = now;
+        Ship follower = null;
+        for (Ship s : ships) {
+            if (!s.isValid()) continue;
+            if (!(s instanceof eu.darkbot.api.game.entities.Player)) continue; // NPC'ler sayilmaz
+            boolean t;
+            try {
+                t = threat.test(s) || s.isAttacking(hero);
+            } catch (RuntimeException e) {
+                t = false;
+            }
+            if (t && hero.getLocationInfo().distanceTo(s) < 2500) {
+                follower = s;
+                break;
+            }
+        }
+        if (follower != null) {
+            jumpState = JumpState.RETURNING;
+            mapTraveler.setTarget(prevMap);
+            Log.i("GUVENLIK", "Portal Zinciri: " + Log.name(follower) + " de gecti, hemen geri atlaniyor (" + prevMap + ")");
+            return false;
+        }
+        boolean hurt;
+        try {
+            hurt = hero.getHealth().hpDecreasedIn(500);
+        } catch (RuntimeException e) {
+            hurt = false;
+        }
+        if (now - jumpedAt < CHAIN_WAIT_MS && !hurt) {
+            // DarkBot'un "tik gelmedi" sifirlamasi (2,5 sn) beklerken tetiklenmesin: kacis durumu kaybolurdu.
+            lastTick = now;
+            if (!chainLogged) {
+                chainLogged = true;
+                Log.i("GUVENLIK", "Portal Zinciri: diger haritada " + CHAIN_WAIT_MS / 1000 + " sn bekleniyor, dusman gecerse hemen geri atlanacak");
+            }
+            return true;
+        }
+        return false;
+    }
+
+    /** Portalin ustundeyken (beklemeden atlamaya gecis) gemi yetenegi yeniden basilmaz. */
+    @Override
+    protected void castDefensiveAbility() {
+        if (safety != null && hero.getLocationInfo().distanceTo(safety) <= safety.getRadius() * 1.5) return;
+        super.castDefensiveAbility();
+    }
+
+    /**
+     * Takip Edilirse Atla: dusman kacisinda portala varinca dusman takip etmiyorsa atlanmaz, portalda beklenir
+     * (17:31: KINIK 11 sn'dir ates etmiyordu, yine de atlandi). Takip eder ya da hasar alinirsa atlanir.
+     */
+    @Override
+    protected Escaping getEscape() {
+        Escaping e = super.getEscape();
+        if (e != Escaping.ENEMY || !charge() || !plusCfg().FOLLOW_JUMP) return e;
+        if (jumpState != JumpState.CURRENT_MAP || safety == null || safety.getType() != SafetyInfo.Type.PORTAL) return e;
+        if (hero.getLocationInfo().distanceTo(safety) > safety.getRadius()) return e;
+        boolean f;
+        try {
+            f = following.getAsBoolean();
+        } catch (RuntimeException ex) {
+            f = true;
+        }
+        if (f) return e;
+        Log.every("followjump", 5000, "GUVENLIK", "Takip Edilirse Atla: portaldayiz, dusman takip etmiyor, atlanmadan bekleniyor");
+        return Escaping.WAITING;
+    }
+
+    /**
      * Yedek: harita degisim olayi bir sekilde gelmezse (dinleyici kaydi) atlama burada da yakalanir; yoksa kacis
      * "jumping"te kalip yeni haritada eski portala atlamaya calisiyordu.
      */
@@ -379,15 +483,45 @@ public class PlusSafety extends SafetyFinder {
         for (Ship sh : ships) if (runFrom(sh)) enemies.add(sh);
 
         Set<BotPlusConfig.EscapeOpt> o = opts();
+        // Portalda (Takip Edilirse Atla ile beklerken) dusman gelince ayni portal korunur: koni kurali portalin
+        // ustundeyken rastgele sonuc verip baska portala / haritaya kaciliyordu.
+        if (safety != null && safety.getType() == SafetyInfo.Type.PORTAL && hero.getLocationInfo().distanceTo(safety) <= safety.getRadius() * 1.5) {
+            for (SafetyInfo s : usable)
+                if (s.getType() == SafetyInfo.Type.PORTAL && Math.hypot(s.getX() - safety.getX(), s.getY() - safety.getY()) < 50) return s;
+        }
         // Kacarken Portaldan Atla: kacisin sectigi portal (30 sn icinde) once denenir.
         if (preferAt > 0 && now - preferAt < 30_000 && prefer != null && map != null && map.getId() == preferMap) {
             for (SafetyInfo s : usable)
                 if (s.getType() == SafetyInfo.Type.PORTAL && Math.hypot(s.getX() - prefer.getX(), s.getY() - prefer.getY()) < 50) return s;
         }
-        for (SafetyInfo s : usable) {
-            if (o.contains(BotPlusConfig.EscapeOpt.CONE) && !inCone(s, enemies)) continue;
-            if (o.contains(BotPlusConfig.EscapeOpt.RACE) && !winsRace(s, enemies)) continue;
-            return s;
+        CoreConfig.EscapePlusSet pc = plusCfg();
+        // Can Kritikse En Yakin Portal: koni / yaris kurali yok (yaris kazanilan varsa o, yoksa en yakin).
+        boolean crit;
+        try {
+            crit = pc.CRIT_PORTAL && critical.getAsBoolean();
+        } catch (RuntimeException e) {
+            crit = false;
+        }
+        if (crit && !usable.isEmpty()) {
+            for (SafetyInfo s : usable)
+                if (winsRace(s, enemies)) {
+                    Log.every("safetycrit", 5000, "GUVENLIK", "can kritik: koni kuralsiz, dusmandan once varilan en yakin portal " + s);
+                    return s;
+                }
+            Log.every("safetycrit", 5000, "GUVENLIK", "can kritik: koni / yaris kuralsiz en yakin portal " + usable.get(0));
+            return usable.get(0);
+        }
+        // Genisleyen Koni: uygun portal yoksa koni 60 -> 90 -> 120 derece (eskiden 3 atlanabilir portal varken 11 kez
+        // "uygun portal yok" deyip haritada kaciliyordu).
+        boolean cone = o.contains(BotPlusConfig.EscapeOpt.CONE);
+        double[] cones = cone && pc.WIDEN_CONE ? new double[]{CONE_DEG, 90, 120} : new double[]{CONE_DEG};
+        for (double deg : cones) {
+            for (SafetyInfo s : usable) {
+                if (cone && !inCone(s, enemies, deg)) continue;
+                if (o.contains(BotPlusConfig.EscapeOpt.RACE) && !winsRace(s, enemies)) continue;
+                if (deg > CONE_DEG) Log.every("safetywide", 5000, "GUVENLIK", "kacis konisi " + (int) deg + " dereceye genisletildi: " + s);
+                return s;
+            }
         }
         if (o.contains(BotPlusConfig.EscapeOpt.ELSE_OUTRUN) || usable.isEmpty()) {
             Log.every("safetynone", 5000, "GUVENLIK", "kacis icin uygun portal yok (" + usable.size()
@@ -434,6 +568,9 @@ public class PlusSafety extends SafetyFinder {
                 double run = away + Math.PI;
                 double diff = Math.abs(Math.atan2(Math.sin(to - run), Math.cos(to - run)));
                 if (Math.toDegrees(diff) > maxDeg) continue;
+                // Sadece kacis yolunun ustundeki portal: kacis cizgisine yanal uzakligi HOP_LATERAL'dan fazla olmamali
+                // (eskiden 75 derece sapma serbestti, yolda olmayan portala dogrudan gidiliyordu).
+                if (d * Math.sin(diff) > HOP_LATERAL) continue;
                 if (enemy != null) {
                     double ours = d / Math.max(1, hero.getSpeed());
                     double theirs = enemy.getLocationInfo().distanceTo(s) / Math.max(1, enemy.getSpeed());
@@ -493,12 +630,16 @@ public class PlusSafety extends SafetyFinder {
 
     /** Kacis Konisi: gemiden portala yon, en yakin dusmandan gemiye yonle en fazla CONE_DEG derece fark. */
     private boolean inCone(SafetyInfo s, List<Ship> enemies) {
+        return inCone(s, enemies, CONE_DEG);
+    }
+
+    private boolean inCone(SafetyInfo s, List<Ship> enemies, double coneDeg) {
         Ship e = nearest(enemies);
         if (e == null) return true;
         double away = Math.atan2(hero.getY() - e.getY(), hero.getX() - e.getX());
         double to = Math.atan2(s.getY() - hero.getY(), s.getX() - hero.getX());
         double diff = Math.abs(Math.atan2(Math.sin(to - away), Math.cos(to - away)));
-        return Math.toDegrees(diff) <= CONE_DEG;
+        return Math.toDegrees(diff) <= coneDeg;
     }
 
     /** Varis Yarisi: gemi portala her dusmandan (hizlarina gore) belirgin sekilde once varmali. */

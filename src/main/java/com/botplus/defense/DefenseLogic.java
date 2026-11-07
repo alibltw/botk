@@ -63,7 +63,16 @@ public final class DefenseLogic {
             String why = reason("EMP", c.EMP_WHEN, c.EMP_HP, hp, damaged, enemy, npc);
             // EMP oyuncu kilitlerini kirar; NPC kilidi hemen geri gelir. Sadece bize ates eden oyuncu varken basilir
             // (eskiden NPC'ye de basiliyordu: 54 EMP'nin 39'u NPC'ye gitti, oyuncu gelince EMP beklemede kaliyordu).
-            if (why != null && (enemy != null || context.attackerOfHero() instanceof Player || context.pvpTarget.get() != null)) {
+            // Yetenekleri Kacisa Sakla: kacis EMP'yi kullanacaksa (Kilit Kir ya da Atlatirken EMP) Defense ilk atista
+            // harcamaz; can sinirinin altindaysa yine basilir. 15:28: Defense ilk atista basti, kacista EMP beklemedeydi.
+            // Kacis EMP'yi sadece Hizla Atlat'ta (Atlatirken EMP) ya da Kilit Kir ile basar: o durumlar disinda saklanmaz.
+            boolean escEmp = (context.config.ON_ENEMY.MODE == BotPlusConfig.OnEnemyMode.OUTRUN && context.config.ON_ENEMY.EMP)
+                    || context.config.ON_ENEMY.START_OPTS.contains(BotPlusConfig.StartOpt.LOCK_BREAK);
+            boolean saveEmp = context.saveForEscape() && (why == null || !why.contains("can <=")) && escEmp
+                    && !(enemy != null && context.ignoredOwn(enemy));
+            if (why != null && saveEmp) {
+                Log.dEvery("empsave", 30_000, "KORUMA", "EMP kacisa saklaniyor (" + why + ")");
+            } else if (why != null && (enemy != null || context.attackerOfHero() instanceof Player || context.pvpTarget.get() != null)) {
                 if (use(SelectableItem.Special.EMP_01, "EMP", why, hp)) {
                     markFirst("EMP", enemy);
                     context.empUsedAt = now;
@@ -215,6 +224,7 @@ public final class DefenseLogic {
             if (cs.contains(BotPlusConfig.Counter.IM_01)) use(SelectableItem.Mine.IM_01, "HASTALIK MAYINI", why, hp);
         }
         // Yaklasinca Hiz Yetenegi: hiz turundeki yetenek kacis istedigi ana kadar tutulur (kacis kendisi basar).
+        // Hiz turundeki yetenek: kacis istedigi ana kadar tutulur (Yaklasinca Hiz Yetenegi ya da Yetenekleri Kacisa Sakla).
         boolean hold = Context.speedType(c.ABILITY) && context.holdSpeed.getAsBoolean();
         if (cs.contains(BotPlusConfig.Counter.ABILITY) && c.ABILITY != null && !hold) use(c.ABILITY, "GEMI YETENEGI " + c.ABILITY, why, hp);
         boolean lockedOnFoe = java.util.Objects.equals(context.hero.getTarget(), foe);

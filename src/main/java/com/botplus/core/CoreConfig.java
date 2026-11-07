@@ -103,6 +103,10 @@ public class CoreConfig extends BotPlusConfig {
         @Option("botplus.avoid_aggressive")
         public boolean AVOID_ONLY_AGGRESSIVE = true;
 
+        /** Saldirmayan NPC'lerden Kacinma: Boss Kristallon, Boss Lordakium, Talon'lar vb. yaninda dolasilmaz. */
+        @Option("botplus.avoid_passive")
+        public boolean PASS_PASSIVE = true;
+
         @Option("botplus.plus.speed_ability")
         public boolean SPEED_ABILITY = false;
 
@@ -165,6 +169,10 @@ public class CoreConfig extends BotPlusConfig {
         @Option("botplus.on_enemy.outrun")
         public OutrunSet ATLAT = new OutrunSet();
 
+        /** Gelismis Kacis (2.5.0): loglardaki olumlerden cikan kacis iyilestirmeleri. */
+        @Option("botplus.on_enemy.plus")
+        public EscapePlusSet GELISMIS = new EscapePlusSet();
+
         /** Kacis Baslangici: dusman ilk ates ettiginde. */
         @Option("botplus.on_enemy.start_opts")
         @Dropdown(multi = true)
@@ -179,14 +187,72 @@ public class CoreConfig extends BotPlusConfig {
         @Option.Ignore
         public BotPlusConfig.RememberMode REMEMBER = BotPlusConfig.RememberMode.KILLER;
 
+        /** 0: dusman sirketten kimse hatirlanmaz (Hatirla secili olsa da). */
         @Option("botplus.on_enemy.remember_min")
-        @Number(min = 1, max = 60, step = 1)
+        @Number(min = 0, max = 60, step = 1)
         public int REMEMBER_MIN = 10;
 
         /** Kendi sirketinden saldiran ayri sure hatirlanir. */
+        /** 0: kendi sirketinden kimse hatirlanmaz. */
         @Option("botplus.on_enemy.remember_own_min")
-        @Number(min = 1, max = 60, step = 1)
+        @Number(min = 0, max = 60, step = 1)
         public int REMEMBER_OWN_MIN = 1;
+
+        /**
+         * Saldir seciliyken (PvP Plus acik) hatirlanan oyuncudan kacilmaz, yanindaki NPC / bulucu sinyali yasaklanmaz:
+         * karsilik PvP'ye birakilir. Push Korumasi'nin olme sinirindaki oyuncudan yine kacilir.
+         */
+        @Option("botplus.on_enemy.remember_attack_stay")
+        public boolean REMEMBER_ATTACK_STAY = true;
+    }
+
+    /** Gelismis Kacis: hepsi varsayilan acik. */
+    public static class EscapePlusSet {
+        /** Oyuncu ateşiyle can 2 sn icinde bu kadar duserse (her modda, saldirmadan) portala kacilir. 0: kapali. */
+        @Option("botplus.on_enemy.plus.rapid")
+        @Number(min = 0, max = 60, step = 5)
+        public int RAPID_LOSS = 25;
+
+        /** Can %50 altinda ve dusman 3000 icindeyse kacis bitmez (en fazla 60 sn). */
+        @Option("botplus.on_enemy.plus.end_hold")
+        public boolean END_HOLD = true;
+
+        /** Can Kacis Cani'nin altindaysa koni / yaris kurali olmadan en yakin portal. */
+        @Option("botplus.on_enemy.plus.crit_portal")
+        public boolean CRIT_PORTAL = true;
+
+        /** Uygun portal yoksa koni 60 -> 90 -> 120 derece genisletilir. */
+        @Option("botplus.on_enemy.plus.widen_cone")
+        public boolean WIDEN_CONE = true;
+
+        /** Portala varinca sadece dusman takip ediyorsa atlanir; etmiyorsa portalda beklenir. */
+        @Option("botplus.on_enemy.plus.follow_jump")
+        public boolean FOLLOW_JUMP = true;
+
+        /** Atladiktan sonra dusman da gecerse hemen geri atlanir; gecmezse 10 sn beklenip donulur. */
+        @Option("botplus.on_enemy.plus.chain")
+        public boolean PORTAL_CHAIN = true;
+
+        /** Hizla Atlat: koseye / kenara giden yon yerine harita ortasina acik yon. */
+        @Option("botplus.on_enemy.plus.corner")
+        public boolean CORNER_GUARD = true;
+
+        /** Hizla Atlat: dusman pesimizden yaklasiyorsa arkaya yavaslatici mayin (SLM-01). */
+        @Option("botplus.on_enemy.plus.mine")
+        public boolean MINE_BACK = true;
+
+        /** Kacis modu Kac / Hizla Atlat iken Defense EMP'yi ve hiz yetenegini ilk atista harcamaz, kacis kullanir. */
+        @Option("botplus.on_enemy.plus.save")
+        public boolean SAVE_SKILLS = true;
+
+        /** Atlatilan dusmanin yanindaki NPC'ler bu kadar sn secilmez (0: kapali). */
+        @Option("botplus.on_enemy.plus.after")
+        @Number(min = 0, max = 60, step = 5)
+        public int AFTER_SEC = 10;
+
+        /** Tamirde can %50 altinda ve dusman 3000 icindeyse haritada degil portalda tamir. */
+        @Option("botplus.on_enemy.plus.repair_portal")
+        public boolean REPAIR_PORTAL = true;
     }
 
     /** Hizla Atlat: haritada dusmandan hizla uzaklasma. */
@@ -317,8 +383,10 @@ public class CoreConfig extends BotPlusConfig {
         if (DUSMAN == null) DUSMAN = new OnEnemySet();
         if (DUSMAN.MODE == null) DUSMAN.MODE = BotPlusConfig.OnEnemyMode.CONTINUE;
         if (DUSMAN.ATLAT == null) DUSMAN.ATLAT = new OutrunSet();
+        if (DUSMAN.GELISMIS == null) DUSMAN.GELISMIS = new EscapePlusSet();
         if (DUSMAN.OWN == null) DUSMAN.OWN = BotPlusConfig.OwnMode.SAME;
-        DUSMAN.REMEMBER_OWN_MIN = Math.max(1, Math.min(60, DUSMAN.REMEMBER_OWN_MIN));
+        DUSMAN.REMEMBER_OWN_MIN = Math.max(0, Math.min(60, DUSMAN.REMEMBER_OWN_MIN));
+        DUSMAN.REMEMBER_MIN = Math.max(0, Math.min(60, DUSMAN.REMEMBER_MIN));
         if (DUSMAN.KAC == null) DUSMAN.KAC = EnumSet.allOf(EscapeOpt.class);
         if (DUSMAN.BASLANGIC == null) DUSMAN.BASLANGIC = EnumSet.of(StartOpt.INSTANT_TURN);
         if (DUSMAN.ATLAT.SECENEK == null) DUSMAN.ATLAT.SECENEK = EnumSet.allOf(OutrunOpt.class);

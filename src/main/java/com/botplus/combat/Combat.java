@@ -63,22 +63,22 @@ public class Combat implements Configurable<Combat.Config>, eu.darkbot.api.exten
         @Dropdown
         public BotPlusConfig.FightPet PET = BotPlusConfig.FightPet.NONE;
 
-        @Option("botplus.combat.orbit")
+        @Option.Ignore // 2.6.0: tarz ince ayarlari menuden kaldirildi (varsayilanlar kodda)
         public BotPlusConfig.OrbitSettings ORBIT = new BotPlusConfig.OrbitSettings();
 
-        @Option("botplus.combat.pendulum")
+        @Option.Ignore // 2.6.0: tarz ince ayarlari menuden kaldirildi (varsayilanlar kodda)
         public BotPlusConfig.PendulumSettings PENDULUM = new BotPlusConfig.PendulumSettings();
 
-        @Option("botplus.combat.wave")
+        @Option.Ignore // 2.6.0: tarz ince ayarlari menuden kaldirildi (varsayilanlar kodda)
         public BotPlusConfig.WaveSettings WAVE = new BotPlusConfig.WaveSettings();
 
-        @Option("botplus.combat.harbor")
+        @Option.Ignore // 2.6.0: tarz ince ayarlari menuden kaldirildi (varsayilanlar kodda)
         public BotPlusConfig.HarborSettings HARBOR = new BotPlusConfig.HarborSettings();
 
-        @Option("botplus.combat.crescent")
+        @Option.Ignore // 2.6.0: tarz ince ayarlari menuden kaldirildi (varsayilanlar kodda)
         public BotPlusConfig.CrescentSettings CRESCENT = new BotPlusConfig.CrescentSettings();
 
-        @Option("botplus.combat.lock")
+        @Option.Ignore // 2.6.0: tarz ince ayarlari menuden kaldirildi (varsayilanlar kodda)
         public BotPlusConfig.LockSettings LOCK = new BotPlusConfig.LockSettings();
 
         @Option("botplus.combat.claw")

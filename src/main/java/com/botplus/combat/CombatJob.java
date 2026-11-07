@@ -49,6 +49,17 @@ public final class CombatJob implements PlusModule.Job {
     // yay
     double arcCenter = Double.NaN;
     int arcDir = 1;
+    /**
+     * 2.6.0 Gecis Yumusatma: ilk vurustan yaya gecerken bu ana kadar yon degismez, yay ortasi geminin bulundugu yer
+     * olur (eskiden gecislerin %31'inde gemi 1,5 sn icinde durup geri donuyordu).
+     */
+    long settleUntil;
+    /** Geminin NPC etrafindaki acisal hizi (yon): gecis yonu icin. */
+    double angPrev = Double.NaN, angVel;
+    long angSampleAt;
+    /** Ilk vurusta isabet beklerken kayma yonu kuruldu mu. */
+    boolean entrySlideInit;
+    static final long SETTLE_MS = 1200;
     long centerAt, flipAt;
     int sweeps;
     boolean inward;
@@ -287,6 +298,13 @@ public final class CombatJob implements PlusModule.Job {
         waveDir = 0;
         crescentCenter = Double.NaN;
         boomT = Double.NaN;
+        smartCenter = Double.NaN; // 2.6.0: Akilli Konum / Mekik
+        hawk = false;
+        hawkSide = 0;
+        settleUntil = 0;
+        entrySlideInit = false;
+        angPrev = Double.NaN;
+        angVel = 0;
         lockCenter = Double.NaN;
         lockShift = 0;
         lockLastRate = -1;
@@ -453,12 +471,13 @@ public final class CombatJob implements PlusModule.Job {
 
     /** Ilk vurus adi (durum satiri). */
     String entryLabel() {
-        if (eagleOn) return " (kartal dalışı)";
+        if (eagleOn) return hawk ? " (atmaca geçişi)" : " (kartal dalışı)";
         switch (entryFh) {
             case LANCE: return " (mızrak)";
             case DIVER: return diveStage == 0 ? " (dalgıç: dalış)" : " (dalgıç: çıkış)";
             case BLIND_SPOT: return " (kör nokta)";
             case BRAKE: return " (frenli giriş)";
+            case INTERCEPT: return " (önüne geç)";
             default: return "";
         }
     }
@@ -524,6 +543,8 @@ public final class CombatJob implements PlusModule.Job {
             case CRESCENT: return "Yarım Ay";
             case BOOMERANG: return "Bumerang";
             case RANGE_LOCK: return "Menzil Kilidi";
+            case SMART_SPOT: return "Akıllı Konum";
+            case SHUTTLE: return "Mekik";
             default: return "Yörünge";
         }
     }
@@ -535,6 +556,7 @@ public final class CombatJob implements PlusModule.Job {
             case DIVER: return "dalgic, ";
             case BLIND_SPOT: return "kor nokta girisi, ";
             case BRAKE: return "frenli giris, ";
+            case INTERCEPT: return "onune gec, ";
             default: return "";
         }
     }
@@ -592,6 +614,10 @@ public final class CombatJob implements PlusModule.Job {
     void phase(CombatLogic.Phase p, String why) {
         if (p == phase) return;
         if (p == CombatLogic.Phase.APPROACH) approachStart = Context.now();
+        // Ilk vurustan / tegetten yaya geciste yon korunur (bkz. settleUntil).
+        if (p == CombatLogic.Phase.ARC && (phase == CombatLogic.Phase.FIRST_HIT || phase == CombatLogic.Phase.APPROACH))
+            settleUntil = Context.now() + SETTLE_MS;
+        if (p == CombatLogic.Phase.FIRST_HIT) entrySlideInit = false;
         Log.d("COMBAT", npcName + " #" + npcId + " " + phase + " -> " + p + ": " + why);
         phase = p;
     }
@@ -895,6 +921,7 @@ public final class CombatJob implements PlusModule.Job {
         }
 
         Location predicted = predict(n);
+        sampleAngle(predicted, now);
         Location p;
         if (phase == CombatLogic.Phase.APPROACH ? d > Math.max(radius, firstHitLogged ? 0 : firstHitRadius(n, false)) * CombatLogic.APPROACH_OUT
                 : d > Math.max(radius, phase == CombatLogic.Phase.FIRST_HIT ? firstHitRadius(n, false) : 0) * 1.3 && !stepOutActive(now)) {
@@ -922,11 +949,13 @@ public final class CombatJob implements PlusModule.Job {
                     arcDir = vortexDir;
                     phase(CombatLogic.Phase.ARC, "girdap girisi, tegetten menzile girildi " + (int) d);
                 } else {
-                    eagleOn = fh == BotPlusConfig.FirstHit.EAGLE;
+                    eagleOn = fh == BotPlusConfig.FirstHit.EAGLE || fh == BotPlusConfig.FirstHit.HAWK;
+                    hawk = fh == BotPlusConfig.FirstHit.HAWK;
+                    hawkSide = 0;
                     eagleFrom = Location.of(predict(n).getX(), predict(n).getY()).angleTo(cp.context.hero);
                     entryFh = fh;
                     diveStage = 0;
-                    phase(CombatLogic.Phase.FIRST_HIT, (eagleOn ? "kartal dalisi, " : entryName(fh)) + "menzile girildi " + (int) d);
+                    phase(CombatLogic.Phase.FIRST_HIT, (eagleOn ? (hawk ? "atmaca gecisi, " : "kartal dalisi, ") : entryName(fh)) + "menzile girildi " + (int) d);
                 }
                 firstHitAt = now;
                 // Ates bekcisi payi menzile giristen baslar (yaklasma suresi "hasar yok" sayilmaz).
@@ -936,10 +965,12 @@ public final class CombatJob implements PlusModule.Job {
             if (phase == CombatLogic.Phase.FIRST_HIT && eagleOn) {
                 // Kartal Dalisi: NPC'nin ustunden gecilir, karsi tarafa varinca tarza baglanilir.
                 double gone = Math.abs(CombatLogic.norm(predicted.angleTo(cp.context.hero) - eagleFrom));
-                if (gone > Math.toRadians(120) || now - firstHitAt > CombatLogic.FIRST_HIT_GIVEUP_MS + 2000) {
+                double doneAt = hawk ? 2 * HAWK_HALF - Math.toRadians(10) : Math.toRadians(120);
+                if (gone > doneAt || now - firstHitAt > CombatLogic.FIRST_HIT_GIVEUP_MS + 2000) {
                     eagleOn = false;
                     arcCenter = Double.NaN;
-                    phase(CombatLogic.Phase.ARC, gone > Math.toRadians(120) ? "kartal dalisi tamam, karsi taraftan baglanildi" : "kartal dalisi suresi");
+                    String what = hawk ? "atmaca gecisi" : "kartal dalisi";
+                    phase(CombatLogic.Phase.ARC, gone > doneAt ? what + " tamam, " + (hawk ? "yandan" : "karsi taraftan") + " baglanildi" : what + " suresi");
                 }
             }
             if (phase == CombatLogic.Phase.FIRST_HIT && !eagleOn) {
@@ -966,7 +997,8 @@ public final class CombatJob implements PlusModule.Job {
             double safe = cp.context.config.COMBAT.SAFE.APPROACH && firstHitLogged ? safeCenter(n, now) : Double.NaN;
             if (phase == CombatLogic.Phase.FIRST_HIT && eagleOn) {
                 // Kartal Dalisi: girilen yonun tam tersindeki noktaya (NPC'nin ustunden) duz gidilir.
-                p = Location.of(predicted, eagleFrom + Math.PI, radius * 0.7);
+                // Atmaca Gecisi (2.6.0): NPC'nin ustunden degil, menzilin %75'i uzakliktaki kirisle yanindan gecilir.
+                p = hawk ? hawkPoint(n, predicted, radius) : Location.of(predicted, eagleFrom + Math.PI, radius * 0.7);
             } else if (phase == CombatLogic.Phase.FIRST_HIT && entryHitPoint(n, predicted, radius, now) != null) {
                 p = entryHitPoint(n, predicted, radius, now);
             } else if (phase == CombatLogic.Phase.FIRST_HIT) {
@@ -986,10 +1018,17 @@ public final class CombatJob implements PlusModule.Job {
                 p = boomerangPoint(n, predicted, radius, now);
             } else if (style() == BotPlusConfig.CombatStyle.RANGE_LOCK) {
                 p = lockPoint(n, predicted, radius, now);
+            } else if (style() == BotPlusConfig.CombatStyle.SMART_SPOT) {
+                p = smartSpotPoint(n, predicted, radius, now);
+            } else if (style() == BotPlusConfig.CombatStyle.SHUTTLE) {
+                p = shuttlePoint(n, predicted, radius, now);
             } else {
                 p = arcPoint(n, predicted, d, radius, now); // Yorunge ve Liman
             }
         }
+        // 2.6.0: ilk vurus noktasina varildiysa isabet beklerken durulmaz, ayni mesafede yorunge yonunde kayilir
+        // (eskiden gemi 2-4 sn yerinde bekliyordu: "ilk vurusta duraksama").
+        if (phase == CombatLogic.Phase.FIRST_HIT && !eagleOn) p = entrySlide(predicted, p, now);
         // Hasar Alirken Menzilden Cik: NPC'nin vurdugu mesafenin disina kisa cikis, sonra geri.
         if ((phase == CombatLogic.Phase.ARC || phase == CombatLogic.Phase.HOLD) && !chase && !fleeing
                 && style() != BotPlusConfig.CombatStyle.RANGE_LOCK) { // Menzil Kilidi kendi dis ucuna cekilir
@@ -1240,8 +1279,153 @@ public final class CombatJob implements PlusModule.Job {
     /** Kacisi onceden karsilama: NPC kacacagi cana yaklastiysa (ogrenilmis) biraz daha yakin dur. */
     double fleePrep(Npc n, double r, double radius) {
         double fh = Targeting.fleeHp(n);
+        // Kacisi Onle (2.6.0): kacis cani bilinmiyorsa %25 sayilir, NPC'ye daha cok (%72) yaklasilir: NPC kacmaya
+        // baslayinca lazer menzilde kalir, kovalamaya gerek kalmaz ya da kisa surer.
+        boolean cut = cp.context.config.COMBAT.OPTIONS != null && cp.context.config.COMBAT.OPTIONS.contains(BotPlusConfig.CombatOption.FLEE_CUT);
+        if (cut) {
+            double t = fh > 0 ? fh : 0.25;
+            if (Context.hp(n) < t + 0.07 && !cp.targeting.fleeing()) {
+                if (Log.dDue("fleecut" + npcId, 5000))
+                    Log.d("COMBAT", npcName + " kacisi onle: kacis canina yaklasti (" + Log.pct(Context.hp(n)) + "), yakina giriliyor");
+                return Math.min(r, radius * 0.72);
+            }
+            return r;
+        }
         if (fh > 0 && Context.hp(n) < fh + 0.05 && !cp.targeting.fleeing()) return Math.min(r, radius * CombatLogic.RANGE_BUFFER_IN);
         return r;
+    }
+
+    // ------------------------------------------------------------ 2.6.0: yeni tarzlar ve ilk vuruslar
+
+    /** Atmaca Gecisi: kiris NPC'den menzilin bu orani uzakta (NPC'nin ustunden gecilmez). */
+    static final double HAWK_CHORD = 0.75;
+    /** Atmaca Gecisi kirisinin yarim acisi: acos(0,75) ~ 41 derece. */
+    static final double HAWK_HALF = Math.acos(HAWK_CHORD);
+    boolean hawk;
+    int hawkSide;
+
+    /**
+     * Atmaca Gecisi: menzil kenarindan girilip NPC'den menzilin %75'i uzakliktaki kirisle yanindan gecilir; kirisin
+     * ucunda (yaklasik 80 derece donulmus) tarza baglanilir. Taraf: NPC'nin onune (az hasar) dusen, bilinmiyorsa
+     * geminin donus yonu.
+     */
+    Location hawkPoint(Npc n, Location predicted, double radius) {
+        if (hawkSide == 0) {
+            double f = frontAngle(n, predicted);
+            if (!Double.isNaN(f)) {
+                double plus = Math.abs(CombatLogic.norm(eagleFrom + HAWK_HALF - f));
+                double minus = Math.abs(CombatLogic.norm(eagleFrom - HAWK_HALF - f));
+                hawkSide = plus <= minus ? 1 : -1;
+            } else hawkSide = angVel < 0 ? -1 : 1;
+            arcDir = hawkSide; // kirisin sonunda ayni yonde yaya devam
+        }
+        Location q = Location.of(predicted, eagleFrom + hawkSide * 2 * HAWK_HALF, radius * 0.95);
+        if (!cp.context.move.canMove(q)) {
+            hawkSide = -hawkSide;
+            arcDir = hawkSide;
+            q = Location.of(predicted, eagleFrom + hawkSide * 2 * HAWK_HALF, radius * 0.95);
+        }
+        return q;
+    }
+
+    /**
+     * Onune Gec: hareketli NPC'ye simdiki yerine degil, gemi varinca olacagi yere ve onunden (gittigi yon) girilir.
+     * NPC duruyorsa / yonu bilinmiyorsa null (normal yaklasma).
+     */
+    Location interceptPoint(Npc n, Location predicted, double d, double radius) {
+        Optional<Location> dest = n.getDestination();
+        if (!n.isMoving() || !dest.isPresent() || n.getSpeed() <= 0) return null;
+        int heroSpeed = Math.max(1, cp.context.hero.getSpeed());
+        Location from = Location.of(n.getX(), n.getY());
+        double len = from.distanceTo(dest.get());
+        if (len < 1) return null;
+        double t = Math.max(0, d - radius) / heroSpeed;          // varis suresi (sn)
+        double go = Math.min(len, n.getSpeed() * t);               // NPC'nin o surede gidecegi yol
+        double heading = from.angleTo(dest.get());
+        // Location.of(c, a, r) = c - (cos a, sin a) * r ve from.angleTo(dest) dest'ten from'a bakar: bu nokta dest'e dogru.
+        Location future = Location.of(from, heading, go);
+        if (Double.isNaN(future.getX())) return null;
+        // NPC'nin onu: gelecek konumdan gittigi yone dogru, ilk vurus mesafesinde.
+        Location p = Location.of(future, heading, firstHitRadius(n, false));
+        return cp.context.move.canMove(p) ? p : null;
+    }
+
+    double smartCenter = Double.NaN;
+    int smartDir = 1;
+
+    /**
+     * Akilli Konum: bu NPC turu icin ogrenilen en az hasarli taraf (KOR ACI; ogrenilmemisse NPC'nin onu) ve en az
+     * hasarli mesafe bandinda durulur; gemi durmasin diye o noktanin +-25 derece etrafinda yavasca gidip gelinir.
+     */
+    Location smartSpotPoint(Npc n, Location predicted, double radius, long now) {
+        double a = predicted.angleTo(cp.context.hero);
+        double c = blindAngle(n, predicted);
+        if (Double.isNaN(c)) c = Double.isNaN(smartCenter) ? a : smartCenter;
+        if (Double.isNaN(smartCenter)) smartCenter = c;
+        else {
+            double diff = CombatLogic.norm(c - smartCenter);
+            double max = Math.toRadians(CENTER_SLEW_DEG) * 0.1;
+            smartCenter += Math.abs(diff) <= max ? diff : Math.signum(diff) * max;
+        }
+        double half = Math.toRadians(25);
+        double rel = CombatLogic.norm(a - smartCenter);
+        if (rel * smartDir > half && now - flipAt > CombatLogic.FLIP_MIN_MS && now >= settleUntil) {
+            smartDir = -smartDir;
+            flipAt = now;
+            lastFlipWhy = "yay ucu";
+        }
+        if (Math.abs(rel) > half + 0.2) smartDir = rel > 0 ? -1 : 1; // noktaya en kisa yonden
+        double sb = cp.safeBand(npcName, bandMin(n, radius), Math.min(radius, bandMax(n, radius)));
+        double rT = fleePrep(n, sb > 0 ? sb : radius * 0.95, radius);
+        double r = fixR(predicted, rT, radius);
+        double step = Math.min(arcStep(r), 0.15);
+        Location p = Location.of(predicted, a + smartDir * step, r);
+        if (!cp.context.move.canMove(p)) {
+            smartDir = -smartDir;
+            p = Location.of(predicted, a + smartDir * step, r);
+        }
+        if (Log.dDue("smartspot" + npcId, 15_000))
+            Log.d("COMBAT", npcName + " akilli konum: aci " + Math.round(Math.toDegrees(CombatLogic.norm(smartCenter)))
+                    + " mesafe " + (int) rT + (sb > 0 ? " (ogrenilen bant)" : " (bant ogrenilmedi)"));
+        return validOr(predicted, p, null, radius);
+    }
+
+    int shuttleEnd = 1;
+
+    /**
+     * Mekik: NPC'nin onunde (ogrenilen az hasarli taraf) duz bir kiris uzerinde gidip gelinir. Kiris NPC'den menzilin
+     * %85'i uzakta, uclari menzilin %98'inde; yay yerine duz gidildigi icin donuslerde hiz kaybi azdir.
+     */
+    Location shuttlePoint(Npc n, Location predicted, double radius, long now) {
+        double c = blindAngle(n, predicted);
+        double a = predicted.angleTo(cp.context.hero);
+        if (Double.isNaN(c)) c = Double.isNaN(smartCenter) ? a : smartCenter;
+        if (Double.isNaN(smartCenter)) smartCenter = c;
+        else {
+            double diff = CombatLogic.norm(c - smartCenter);
+            double max = Math.toRadians(CENTER_SLEW_DEG) * 0.1;
+            smartCenter += Math.abs(diff) <= max ? diff : Math.signum(diff) * max;
+        }
+        double rEnd = fleePrep(n, radius * 0.98, radius);
+        double half = Math.acos(Math.min(0.99, 0.85 * radius / Math.max(1, rEnd)));
+        Location end = Location.of(predicted, smartCenter + shuttleEnd * half, rEnd);
+        if ((cp.context.hero.distanceTo(end) < 60 || !cp.context.move.canMove(end)) && now - flipAt > 600 && now >= settleUntil) {
+            shuttleEnd = -shuttleEnd;
+            flipAt = now;
+            lastFlipWhy = "yay ucu";
+            end = Location.of(predicted, smartCenter + shuttleEnd * half, rEnd);
+        }
+        // Kirisin cok disindaysa (giris / NPC dondu): duz gidilirse NPC'nin ustunden gecilir; once menzil sinirinda
+        // kirisin yakin ucuna dogru donulur.
+        double a0 = predicted.angleTo(cp.context.hero);
+        double rel = CombatLogic.norm(a0 - smartCenter);
+        if (Math.abs(rel) > half + 0.3) {
+            double toward = rel > 0 ? -1 : 1;
+            shuttleEnd = rel > 0 ? 1 : -1; // yakin uc
+            Location around = Location.of(predicted, a0 + toward * Math.min(0.3, arcStep(rEnd)), rEnd);
+            return validOr(predicted, around, null, radius);
+        }
+        return validOr(predicted, end, Location.of(predicted, smartCenter - shuttleEnd * half, rEnd), radius);
     }
 
     /**
@@ -1387,6 +1571,33 @@ public final class CombatJob implements PlusModule.Job {
             return BotPlusConfig.FirstHit.NORMAL;
         }
         return fh;
+    }
+
+    /** Geminin NPC etrafindaki donus yonu (250 ms'de bir olculur). */
+    void sampleAngle(Location predicted, long now) {
+        if (now - angSampleAt < 250) return;
+        double a = predicted.angleTo(cp.context.hero);
+        angVel = Double.isNaN(angPrev) || now - angSampleAt > 1000 ? 0 : CombatLogic.norm(a - angPrev);
+        angPrev = a;
+        angSampleAt = now;
+    }
+
+    /** Ilk vurus noktasina varildiysa (80 icinde) ayni mesafede yorunge yonunde kayan nokta; degilse p aynen. */
+    Location entrySlide(Location predicted, Location p, long now) {
+        if (p == null || cp.context.hero.distanceTo(p) > 80) return p;
+        double a = predicted.angleTo(cp.context.hero);
+        if (!entrySlideInit) {
+            entrySlideInit = true;
+            if (Math.abs(angVel) > 0.003) arcDir = angVel > 0 ? 1 : -1;
+            else initDir(predicted, a);
+        }
+        double r = predicted.distanceTo(p);
+        Location q = Location.of(predicted, a + arcDir * Math.min(0.3, 120 / Math.max(1, r)), r);
+        if (!cp.context.move.canMove(q)) {
+            arcDir = -arcDir;
+            q = Location.of(predicted, a + arcDir * Math.min(0.3, 120 / Math.max(1, r)), r);
+        }
+        return cp.context.move.canMove(q) ? q : p;
     }
 
     /**
@@ -1925,6 +2136,8 @@ public final class CombatJob implements PlusModule.Job {
                 return Location.of(predicted, a, radius * 0.99);
             case BRAKE:
                 return d < radius * 1.35 ? Location.of(predicted, a, radius * 0.98) : null;
+            case INTERCEPT:
+                return interceptPoint(n, predicted, d, radius);
             case BLIND_SPOT: {
                 double b = blindAngle(n, predicted);
                 if (Double.isNaN(b)) return null;
@@ -1975,6 +2188,14 @@ public final class CombatJob implements PlusModule.Job {
         boolean slip = now < slipUntil;
         double safe = slip ? Double.NaN : safeCenter(n, now);
         double a = predicted.angleTo(cp.context.hero);
+        if (now < settleUntil && Double.isNaN(arcCenter) && Double.isNaN(safe)) {
+            // Gecis Yumusatma: yay ortasi geminin oldugu yer, yon geminin gittigi yon (durup geri donulmez).
+            arcCenter = a;
+            centerAt = now;
+            if (Math.abs(angVel) > 0.003) arcDir = angVel > 0 ? 1 : -1;
+            else initDir(predicted, a);
+            Log.d("COMBAT", npcName + " yaya gecis: yon korunuyor (" + (arcDir > 0 ? "saat tersi" : "saat yonu") + ")");
+        }
         if (!Double.isNaN(safe) && Double.isNaN(arcCenter)) {
             arcCenter = safe;
             centerAt = now;
@@ -2033,12 +2254,13 @@ public final class CombatJob implements PlusModule.Job {
         // Dar yayda bir gidis en az 1,2 sn surer (yoksa gemi yayin ucuna hemen varip duruyor, dur-kalk gidiyordu).
         if (limited) half = Math.max(half, Math.min(Math.PI * 0.45, heroSpeed * 1.2 / (2 * Math.max(1, radius))));
         if (limited) step = Math.min(step, Math.max(0.05, half * 0.6));
-        if (limited && CombatLogic.norm(a - arcCenter) * arcDir > half * 0.85 && now - flipAt > CombatLogic.FLIP_MIN_MS) flip(now, "yay ucu");
+        if (limited && CombatLogic.norm(a - arcCenter) * arcDir > half * 0.85 && now - flipAt > CombatLogic.FLIP_MIN_MS
+                && now >= settleUntil) flip(now, "yay ucu");
         // NPC'nin onune gecme: hareketli NPC'nin gittigi yone girilecekse yon cevrilir.
         // 2.5.0: NPC'nin ONU en az hasarli yer (loglar: onu 4-5 bin/sn, yani / arkasi 11-14 bin/sn). Yon artik onune
         // girmemek icin degil, ARKASINA gecmemek icin cevrilir.
         double front = frontAngle(n, predicted);
-        if (!Double.isNaN(front) && now - flipAt > CombatLogic.FLIP_MIN_MS) {
+        if (!Double.isNaN(front) && now - flipAt > CombatLogic.FLIP_MIN_MS && now >= settleUntil) {
             double cur = Math.abs(CombatLogic.norm(a - front));
             double next = Math.abs(CombatLogic.norm(a + arcDir * step - front));
             if (next > Math.toRadians(120) && next > cur) flip(now, "NPC'nin arkasina gecmemek icin");

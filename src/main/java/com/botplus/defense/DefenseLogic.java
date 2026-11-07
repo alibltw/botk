@@ -55,7 +55,7 @@ public final class DefenseLogic {
         Player enemy = enemyAttacker();
         // Yeni saldiri tespiti: bize ates eden her oyuncu (uzaklik farketmez) her tik yazilir.
         for (Player p : context.ents.getPlayers())
-            if (context.isEnemyPlayer(p) && p.isAttacking(context.hero)) newEpisode(p, now);
+            if (context.isEnemyPlayer(p) && p.isAttacking(context.hero) && !context.ownSilent(p)) newEpisode(p, now);
         Npc npc = npcAttacker();
         boolean damaged = now - damageAt < DAMAGE_MS;
 
@@ -72,7 +72,7 @@ public final class DefenseLogic {
                     && !(enemy != null && context.ignoredOwn(enemy));
             if (why != null && saveEmp) {
                 Log.dEvery("empsave", 30_000, "KORUMA", "EMP kacisa saklaniyor (" + why + ")");
-            } else if (why != null && (enemy != null || context.attackerOfHero() instanceof Player || context.pvpTarget.get() != null)) {
+            } else if (why != null && (enemy != null || playerAttacker() || context.pvpTarget.get() != null)) {
                 if (use(SelectableItem.Special.EMP_01, "EMP", why, hp)) {
                     markFirst("EMP", enemy);
                     context.empUsedAt = now;
@@ -303,9 +303,16 @@ public final class DefenseLogic {
 
     private Player enemyAttacker() {
         for (Player p : context.ents.getPlayers())
-            if (context.isEnemyPlayer(p) && p.isAttacking(context.hero) && p.distanceTo(context.hero) < ATTACKER_DIST + 500)
+            if (context.isEnemyPlayer(p) && p.isAttacking(context.hero) && p.distanceTo(context.hero) < ATTACKER_DIST + 500
+                    && !context.ownSilent(p)) // Kendi Sirketi = Yok Say: Defense de kullanilmaz (2.6.0)
                 return p;
         return null;
+    }
+
+    /** Bize ates eden oyuncu var mi (Yok Say'daki kendi sirketi haric). */
+    private boolean playerAttacker() {
+        Object a = context.attackerOfHero();
+        return a instanceof Player && !context.ownSilent((Player) a);
     }
 
     private Npc npcAttacker() {

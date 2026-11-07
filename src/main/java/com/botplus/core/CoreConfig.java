@@ -213,6 +213,13 @@ public class CoreConfig extends BotPlusConfig {
         @Number(min = 0, max = 60, step = 5)
         public int RAPID_LOSS = 25;
 
+        /**
+         * 2.6.0 Akilli Kacis: guclu dusmandan erken kacilir. Can 1 sn'de %15 duserse, olume kalan sure 4 sn'nin altina
+         * inerse ya da can, o oyuncunun 1 sn'de verdigi en buyuk hasarin 1,2 katinin altina inerse (Saldir'da da).
+         */
+        @Option("botplus.on_enemy.plus.smart")
+        public boolean SMART = true;
+
         /** Can %50 altinda ve dusman 3000 icindeyse kacis bitmez (en fazla 60 sn). */
         @Option("botplus.on_enemy.plus.end_hold")
         public boolean END_HOLD = true;
@@ -336,6 +343,11 @@ public class CoreConfig extends BotPlusConfig {
         @Number(min = 10, max = 90, step = 5)
         public int LOW_HP = 40;
 
+        /** 2.6.0: PET bu kadar dakika acilamazsa oyun yenilenir (0: kapali). */
+        @Option("botplus.pet.refresh_min")
+        @Number(min = 0, max = 30, step = 1)
+        public int REFRESH_MIN = 5;
+
         // Eski (2.0 ilk surum) ayarlar: menude yok, sadece Combat'a bir kez aktarmak icin okunur.
         @Option.Ignore
         public boolean ENABLED = true;
@@ -401,6 +413,7 @@ public class CoreConfig extends BotPlusConfig {
         if (HP_BEKLE.MODE == null) HP_BEKLE.MODE = HpWaitMode.NEAR;
         if (PET_AYAR == null) PET_AYAR = new PetSet();
         if (PET_AYAR.COMBAT == null) PET_AYAR.COMBAT = CombatPet.LOOTER;
+        PET_AYAR.REFRESH_MIN = Math.max(0, Math.min(30, PET_AYAR.REFRESH_MIN));
         if (YENILEME == null) YENILEME = new RenewSet();
         if (YENILEME.MODE == null) YENILEME.MODE = RefreshMode.MAP;
         if (KAYIT == null) KAYIT = new LogSet();

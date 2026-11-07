@@ -313,6 +313,16 @@ public final class Log {
         return "%" + Math.round(v * 100);
     }
 
+    /** Kalkan yuzdesi; gemide kalkan okunamiyorsa (en fazla kalkan 0) "-" (2.6.0: eskiden %100 / %0 yaziyordu). */
+    public static String shield(eu.darkbot.api.game.other.Health h) {
+        try {
+            if (h == null || h.getMaxShield() <= 0) return "-";
+            return pct((double) h.getShield() / h.getMaxShield());
+        } catch (RuntimeException e) {
+            return "-";
+        }
+    }
+
     public static String dist(double d) {
         return d >= Double.MAX_VALUE / 2 ? "yok" : String.valueOf((int) d);
     }

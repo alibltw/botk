@@ -167,6 +167,18 @@ public final class Context {
     /** Kendi Sirketi Saldirinca = Yok Say ve bu oyuncu kendi sirketimizden: kacis / takip / tehdit yok. */
     public boolean ignoredOwn(Player p) {
         // Sadece kendi sirketi oldugu BILINENLER yok sayilir (bilinmeyen dusman olabilir: ondan yine kacilir).
+        // 2.6.0: Sadece Savunma ve Karsilik Ver'de de kendi sirketinden kacilmaz / takip edilmez.
+        return p != null && ownNoFlee() && Boolean.TRUE.equals(firmKnown(p));
+    }
+
+    /** Kendi Sirketi Saldirinca: kendi sirketinden kacilmayan modlar (Yok Say, Sadece Savunma, Karsilik Ver). */
+    public boolean ownNoFlee() {
+        BotPlusConfig.OwnMode m = config.ON_ENEMY.OWN_MODE;
+        return m == BotPlusConfig.OwnMode.IGNORE || m == BotPlusConfig.OwnMode.DEFEND || m == BotPlusConfig.OwnMode.COUNTER;
+    }
+
+    /** Yok Say: kendi sirketinden saldirana Defense de kullanilmaz (2.6.0; bilinen kendi sirketi). */
+    public boolean ownSilent(Player p) {
         return p != null && config.ON_ENEMY.OWN_MODE == BotPlusConfig.OwnMode.IGNORE && Boolean.TRUE.equals(firmKnown(p));
     }
 
@@ -190,7 +202,9 @@ public final class Context {
     public boolean mayFire(Player p, java.util.Set<BotPlusConfig.Firm> firms) {
         if (p == null || firms == null) return false;
         if (!ownFirm(p)) return firms.contains(BotPlusConfig.Firm.ENEMY_FIRM);
-        // Kendi Sirketi Saldirinca: Yok Say / Sadece Kac seciliyse kendi sirketine hic ates edilmez.
+        // Kendi Sirketi Saldirinca: Karsilik Ver'de son 5 sn icinde bize ates edene (Kimlere seciminden bagimsiz) ates
+        // edilir; Yok Say / Sadece Kac / Sadece Savunma'da kendi sirketine hic ates edilmez.
+        if (config.ON_ENEMY.OWN_MODE == BotPlusConfig.OwnMode.COUNTER) return attackedBy(p, OWN_FIRM_FIRE_MS);
         if (config.ON_ENEMY.OWN_MODE != BotPlusConfig.OwnMode.SAME) return false;
         return firms.contains(BotPlusConfig.Firm.OWN_FIRM) && attackedBy(p, OWN_FIRM_FIRE_MS);
     }
@@ -439,6 +453,8 @@ public final class Context {
     public long lastEndAt;
     /** DarkBot'un BotPlus'i en son durdurdugu / calistirmadigi an (onStoppedBehavior). */
     public long lastStoppedAt;
+    /** Suren duraklamanin (DarkBot modulu tiklemiyor) basladigi an (2.6.0). */
+    public long stopStartedAt;
     /** Bot gercekten durduruldu (DarkBot "durdur"; olum / harita yukleme degil). Ayar dokumu icin. */
     public long lastHaltedAt;
     /** BotPlus gemiyi en son yonettigi an (PlusSafety: 1 sn icindeyse BotPlus'in kacis karari gecerli). */
@@ -1148,7 +1164,7 @@ public final class Context {
         for (java.util.Map.Entry<Integer, Location> e : trackSeen.entrySet()) {
             int id = e.getKey();
             if (id == exceptId || visible.contains(id) || !tracked(id)) continue;
-            if (trackOwn.getOrDefault(id, false) && config.ON_ENEMY.OWN_MODE == BotPlusConfig.OwnMode.IGNORE) continue;
+            if (trackOwn.getOrDefault(id, false) && ownNoFlee()) continue;
             long ago = now - trackSeenAt.getOrDefault(id, 0L);
             if (ago > TRACK_HIDDEN_MS || trackSeenMap.getOrDefault(id, -2) != map) continue;
             if (e.getValue().distanceTo(l) < r)
@@ -1193,25 +1209,51 @@ public final class Context {
         final long until;
         final int map;
         final String why;
+        /** Bolgeyi koyan dusman (-1: yok): bolgeden uzaklasinca yasak erken kalkar (2.6.0). */
+        final int threatId;
 
-        Zone(Location at, double r, long until, int map, String why) {
+        Zone(Location at, double r, long until, int map, String why, int threatId) {
             this.at = at;
             this.r = r;
             this.until = until;
             this.map = map;
             this.why = why;
+            this.threatId = threatId;
         }
+    }
+
+    /** Dusman yuzunden konan tehlikeli bolge suresi (2.6.0: 60 sn -> 20 sn; dusman uzaklasinca erken kalkar). */
+    public static final long THREAT_ZONE_MS = 20_000;
+    /** Bolgeyi koyan dusman bolgenin merkezinden bu kadar uzaklasinca yasak kalkar. */
+    public static final double THREAT_ZONE_LEAVE = 3000;
+
+    /**
+     * Dusman yuzunden tehlikeli bolge: 20 sn, dusman bolgeden 3000+ uzaklasinca erken kalkar. O dusman hatirlanmiyorsa
+     * (hatirlama suresi 0 dk / Dusmani Hatirla kapali) bolge hic konmaz.
+     */
+    public void threatZone(Locatable at, double r, Player threat, String why) {
+        if (threat == null) return;
+        Boolean own = firmKnown(threat);
+        if (trackMs(own != null && own) <= 0) {
+            Log.dEvery("zoneoff", 30_000, "GUVENLIK", () -> "tehlikeli bolge konmadi: " + Log.name(threat) + " hatirlanmiyor (sure 0 dk)");
+            return;
+        }
+        dangerZone(at, r, THREAT_ZONE_MS, why, mapIdNow(), threat.getId());
     }
 
     private final java.util.List<Zone> dangerZones = new java.util.ArrayList<>();
 
     /** Bolge yasaklanir (ayni yerde zaten varsa suresi uzatilir). */
     public void dangerZone(Locatable at, double r, long ms, String why) {
-        dangerZone(at, r, ms, why, mapIdNow());
+        dangerZone(at, r, ms, why, mapIdNow(), -1);
+    }
+
+    public void dangerZone(Locatable at, double r, long ms, String why, int map) {
+        dangerZone(at, r, ms, why, map, -1);
     }
 
     /** Bolge belirli haritada yasaklanir (kacis portaldan atladiktan sonra biterse eski harita). */
-    public void dangerZone(Locatable at, double r, long ms, String why, int map) {
+    public void dangerZone(Locatable at, double r, long ms, String why, int map, int threatId) {
         if (at == null || map < 0) return;
         long until = now() + ms;
         // Ayni yerdeki eski bolge birlesir: daha uzun sure ve daha buyuk yaricap korunur (kisalmaz).
@@ -1225,8 +1267,8 @@ public final class Context {
         });
         r = keep[0];
         until = (long) keep[1];
-        dangerZones.add(new Zone(Location.of(at.getX(), at.getY()), r, until, map, why));
-        Log.i("GUVENLIK", "tehlikeli bolge " + Log.loc(at) + " (" + (int) r + ") " + ms / 60_000.0 + " dk yasak: " + why);
+        dangerZones.add(new Zone(Location.of(at.getX(), at.getY()), r, until, map, why, threatId));
+        Log.i("GUVENLIK", "tehlikeli bolge " + Log.loc(at) + " (" + (int) r + ") " + ms / 1000 + " sn yasak: " + why);
     }
 
     /** Atlatma Sonrasi Mesafe: atlatilan dusman (id), son yeri, yaricap ve bitis. */
@@ -1260,11 +1302,29 @@ public final class Context {
         return "atlatilan dusman " + keepName + " yakininda (" + (keepUntil - now()) / 1000 + " sn)";
     }
 
+    /** Bolgeyi koyan dusman gorunuyor ve bolgeden uzaklastiysa yasak kalkar (2.6.0). */
+    private void liftLeftZones() {
+        if (dangerZones.isEmpty()) return;
+        dangerZones.removeIf(z -> {
+            if (z.threatId < 0) return false;
+            for (Player p : ents.getPlayers()) {
+                if (p.getId() != z.threatId || !p.isValid()) continue;
+                if (z.at.distanceTo(p) > THREAT_ZONE_LEAVE + z.r) {
+                    Log.i("GUVENLIK", "tehlikeli bolge " + Log.loc(z.at) + " kalkti: " + Log.name(p) + " uzaklasti ("
+                            + (int) z.at.distanceTo(p) + ")");
+                    return true;
+                }
+            }
+            return false;
+        });
+    }
+
     /** Nokta tehlikeli bolgede mi (nedeni), degilse null. */
     public String inDangerZone(Locatable l) {
         if (l == null) return null;
         long now = now();
         int map = mapIdNow();
+        liftLeftZones();
         for (Zone z : dangerZones)
             if (z.until > now && z.map == map && z.at.distanceTo(l) < z.r)
                 return z.why + " (" + (z.until - now) / 1000 + " sn)";
@@ -1701,6 +1761,9 @@ public final class Context {
         return id;
     }
 
+    /** Son "Seref Puani" oyun mesaji: PvP oldurmesini dogrulamak icin (2.6.0). */
+    public volatile long honorMsgAt;
+
     /** Son EMP basilisi (Defense ya da kacis): EMP Donusu icin. */
     public volatile long empUsedAt;
     /** Yaklasinca Hiz Yetenegi: kacis hiz yetenegini tutuyor mu (Defense'in Gemi Yetenegi o ana kadar basilmaz). */
@@ -1727,6 +1790,9 @@ public final class Context {
         } catch (RuntimeException ignored) {
         }
         java.util.Collections.addAll(list, SPEED);
+        // 2.6.0: Pusat Speed Sap Defense'te secili olmasa da kacista kullanilir.
+        if (!list.contains(eu.darkbot.api.game.items.SelectableItem.Ability.PUSAT_PLUS_SPEED_SAP))
+            list.add(eu.darkbot.api.game.items.SelectableItem.Ability.PUSAT_PLUS_SPEED_SAP);
         for (eu.darkbot.api.game.items.SelectableItem.Ability a : list) {
             try {
                 if (!items.getItem(a, eu.darkbot.api.game.items.ItemFlag.AVAILABLE).isPresent()) continue;
@@ -1763,7 +1829,12 @@ public final class Context {
             logAbilities();
         }
         boolean any = false;
-        for (eu.darkbot.api.game.items.SelectableItem.Ability a : SPEED) {
+        // 2.6.0: Pusat Speed Sap de hiz yetenegi (eskiden listede yoktu: "hiz yetenegi yok" yaziyordu). Yetenekleri
+        // Kacisa Sakla aciksa yolda harcanmaz (kacista hazir kalsin).
+        java.util.List<eu.darkbot.api.game.items.SelectableItem.Ability> travel = new java.util.ArrayList<>();
+        java.util.Collections.addAll(travel, SPEED);
+        if (!saveForEscape()) travel.add(eu.darkbot.api.game.items.SelectableItem.Ability.PUSAT_PLUS_SPEED_SAP);
+        for (eu.darkbot.api.game.items.SelectableItem.Ability a : travel) {
             try {
                 if (!items.getItem(a, eu.darkbot.api.game.items.ItemFlag.AVAILABLE).isPresent()) continue;
                 any = true;

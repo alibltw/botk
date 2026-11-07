@@ -289,6 +289,9 @@ public class BotPlusConfig {
         /** PET canı dusunce (dovus disinda) PET kendi tamirine gecer; sinir %. Gorunum alanlari (menude CoreConfig). */
         public boolean LOW_REPAIR = false;
         public int LOW_HP = 40;
+
+        /** PET bu kadar dakika acilamazsa oyun yenilenir (0: kapali). */
+        public transient int REFRESH_MIN = 5;
     }
 
     /** Koruma: EMP, Insta-Shield, PET HP Link (her biri kendi kosullari ve can siniri ile). */
@@ -822,7 +825,7 @@ public class BotPlusConfig {
 
     /** Combat Plus secenekleri (coklu secim). */
     @Configuration("botplus.combat.options")
-    public enum CombatOption { INWARD, OUT_ON_DAMAGE, PRE_LOCK, OPENING_GUARD, RICOCHET }
+    public enum CombatOption { INWARD, OUT_ON_DAMAGE, PRE_LOCK, OPENING_GUARD, RICOCHET, FLEE_CUT }
 
     @Configuration("botplus.plus.hp_wait.which")
     public enum HpWaitWhich { FLAGGED, ALL }
@@ -839,11 +842,11 @@ public class BotPlusConfig {
 
     /** Combat Plus: dovus hareketi. */
     @Configuration("botplus.combat.style")
-    public enum CombatStyle { ORBIT, PENDULUM, WAVE, HARBOR, CRESCENT, BOOMERANG, RANGE_LOCK }
+    public enum CombatStyle { ORBIT, PENDULUM, WAVE, HARBOR, CRESCENT, BOOMERANG, RANGE_LOCK, SMART_SPOT, SHUTTLE }
 
     /** Ilk Vurus: her yeni NPC'ye nasil girilir. */
     @Configuration("botplus.combat.first_hit")
-    public enum FirstHit { NORMAL, EAGLE, VORTEX, LANCE, DIVER, BLIND_SPOT, BRAKE }
+    public enum FirstHit { NORMAL, EAGLE, VORTEX, LANCE, DIVER, BLIND_SPOT, BRAKE, HAWK, INTERCEPT }
 
     /** Kartal Pencesi: bayragi tutulan NPC'lerden once hangisi kesilir. */
     @Configuration("botplus.combat.claw.order")
@@ -1006,6 +1009,14 @@ public class BotPlusConfig {
     @Configuration("botplus.firm")
     public enum Firm { ENEMY_FIRM, OWN_FIRM }
 
+    /** PvP Tarzi (2.6.0): oyuncuya saldirirken hareket. */
+    @Configuration("botplus.pvp.style")
+    public enum PvpStyle { ORBIT, KITE, MINE_TRAP }
+
+    /** PvP Secenekleri (2.6.0). */
+    @Configuration("botplus.pvp.options")
+    public enum PvpOption { RETREAT_STRONG, CHASE_LOW }
+
     /** Saldir (PvP): kime saldirilir. */
     @Configuration("botplus.on_enemy.pvp.who")
     public enum PvpWho { ATTACKERS, LIST_ATTACKERS, LIST, ALL }
@@ -1047,6 +1058,9 @@ public class BotPlusConfig {
         public transient Set<Firm> FIRMS = EnumSet.of(Firm.ENEMY_FIRM);
         /** RSB Kullan (PvP Plus menusunden): oyuncuya saldirirken RSB (RSB alt eklentisi aciksa). */
         public transient boolean RSB = false;
+        /** PvP Tarzi ve Secenekleri (PvP Plus menusunden, 2.6.0). */
+        public transient PvpStyle STYLE = PvpStyle.ORBIT;
+        public transient Set<PvpOption> OPTIONS = EnumSet.noneOf(PvpOption.class);
     }
 
     /** Push Korumasi: ayni oyuncuyu tekrar tekrar oldurme / ondan olme siniri. */
@@ -1112,7 +1126,7 @@ public class BotPlusConfig {
 
     /** Kendi Sirketi Saldirinca: ayni sirketten oyuncu ates edince. */
     @Configuration("botplus.on_enemy.own_mode")
-    public enum OwnMode { SAME, IGNORE, FLEE }
+    public enum OwnMode { SAME, IGNORE, FLEE, DEFEND, COUNTER }
 
     /** Kacis Baslangici: dusman ilk ates ettiginde. */
     @Configuration("botplus.on_enemy.start_opts")

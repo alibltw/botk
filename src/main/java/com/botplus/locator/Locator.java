@@ -386,8 +386,9 @@ public final class Locator {
         }
         Boolean ko = context.ownFirmByName(name);
         boolean kownNow = ko != null && ko;
-        if (kownNow && context.config.ON_ENEMY.OWN_MODE == BotPlusConfig.OwnMode.IGNORE) {
-            Log.i("DUSMAN", name + " seni patlatti ama kendi sirketi (Kendi Sirketi Saldirinca = Yok Say), hatirlanmiyor");
+        if (kownNow && context.ownNoFlee()) {
+            Log.i("DUSMAN", name + " seni patlatti ama kendi sirketi (Kendi Sirketi Saldirinca = "
+                    + context.config.ON_ENEMY.OWN_MODE + "), hatirlanmiyor");
             return;
         }
         if (context.trackMs(kownNow) <= 0) {
@@ -497,7 +498,7 @@ public final class Locator {
                 }
                 Boolean ko = context.ownFirmByName(name);
                 boolean own = ko != null && ko;
-                if (own && context.config.ON_ENEMY.OWN_MODE == BotPlusConfig.OwnMode.IGNORE) continue; // Yok Say
+                if (own && context.ownNoFlee()) continue; // Yok Say / Sadece Savunma / Karsilik Ver
                 if (context.trackMs(own) <= 0) continue; // hatirlama suresi 0 dk: hatirlanmaz
                 killers.put(name, now);
                 if (ko != null) killerOwn.put(name, ko); // bilinmiyorsa kaydedilmez
@@ -989,9 +990,10 @@ public final class Locator {
             Player threat = context.enemyThreat();
             if (threat != null) {
                 Log.i("BULUCU", "dusman " + Log.ship(threat) + " saldiriyor / yaklasiyor, bulucu birakildi");
-                // Sinyal bolgesi ve dusmanin yeri 60 sn yasak: dusman bir an uzaklasinca ayni sinyale donulmesin.
-                context.dangerZone(loc, 2500, 60_000, "bulucu dusman yuzunden birakildi (" + Log.name(threat) + ")");
-                context.dangerZone(threat, 2500, 60_000, "dusman " + Log.name(threat));
+                // Sinyal bolgesi ve dusmanin yeri yasak: dusman bir an uzaklasinca ayni sinyale donulmesin. 2.6.0: 60 sn
+                // yerine 20 sn, dusman bolgeden uzaklasinca erken kalkar, hatirlanmayan dusman icin hic konmaz.
+                context.threatZone(loc, 2500, threat, "bulucu dusman yuzunden birakildi (" + Log.name(threat) + ")");
+                context.threatZone(threat, 2500, threat, "dusman " + Log.name(threat));
                 return false;
             }
             String zone = context.inDangerZone(loc);

@@ -312,7 +312,7 @@ public final class RepairLogic {
 
     private String shield() {
         try {
-            return Log.pct(context.hero.getHealth().shieldPercent());
+            return Log.shield(context.hero.getHealth());
         } catch (RuntimeException e) {
             return "?";
         }

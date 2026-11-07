@@ -19,7 +19,8 @@ public final class DeathLog {
 
     private static final class Sample {
         long at;
-        double hp, shield;
+        double hp;
+        String shieldText = "-";
         long total; // can + kalkan (hasar farki icin)
         String job;
         String target;
@@ -49,7 +50,7 @@ public final class DeathLog {
             s.at = now;
             Health h = context.hero.getHealth();
             s.hp = context.heroHp();
-            s.shield = h == null || h.getMaxShield() <= 0 ? 0 : (double) h.getShield() / h.getMaxShield();
+            s.shieldText = Log.shield(h);
             s.total = h == null ? 0 : (long) h.getHp() + h.getShield();
             s.job = job == null ? "-" : job;
             Npc t = context.targetNpc();
@@ -69,6 +70,12 @@ public final class DeathLog {
         } catch (RuntimeException ignored) {
             // rapor botu durdurmamali
         }
+    }
+
+    /** Son ornegin cani (maxAgeMs'den eskiyse -1): bot duraksadiginda olum ekrani mi ayirt etmek icin (2.6.0). */
+    public double lastHp(long maxAgeMs) {
+        Sample l = samples.peekLast();
+        return l == null || Context.now() - l.at > maxAgeMs ? -1 : l.hp;
     }
 
     /** Gemi patladi: son 30 sn ozeti loga (OLUM). Ornekler silinir. */
@@ -91,6 +98,14 @@ public final class DeathLog {
             return;
         }
         Sample first = samples.peekFirst(), last = samples.peekLast();
+        // 2.6.0: DarkBot olumu gec bildirir (olum ekrani acilinca bot tiklemez, birkac sn sonra "patladi" gelir).
+        // Bot son ornekten sonra durakladiysa olum ani o duraklamanin basi sayilir (eskiden "olumden 4 sn once"
+        // yazan an aslinda olum aniydi).
+        long stop = context.stopStartedAt;
+        if (stop > last.at && stop < deathAt && deathAt - stop < 10_000) {
+            Log.i("OLUM", "DarkBot olumu " + (deathAt - stop) / 1000 + " sn gec bildirdi: olum ani bot duraksadigi an sayiliyor");
+            deathAt = stop;
+        }
         long span = Math.max(1, (last.at - first.at) / 1000);
         // En cok hasar alinan saniye ve isler / saldiranlar.
         long worst = 0, worstSpan = 1;
@@ -122,7 +137,7 @@ public final class DeathLog {
             boolean show = n - i <= 5 || i % 3 == 0;
             i++;
             if (!show) continue;
-            Log.i("OLUM", "-" + Math.max(0, deathAt - s.at) / 1000 + " sn | can " + Log.pct(s.hp) + " kalkan " + Log.pct(s.shield)
+            Log.i("OLUM", "-" + Math.max(0, deathAt - s.at) / 1000 + " sn | can " + Log.pct(s.hp) + " kalkan " + s.shieldText
                     + " | " + s.job + " | hedef " + s.target + " | ates eden " + s.attackers + " | en yakin dusman " + s.enemy
                     + " | " + s.loc);
         }

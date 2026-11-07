@@ -113,6 +113,93 @@ public final class Escape {
         }
         if (hpHist.isEmpty() || now - (long) hpHist.peekLast()[0] >= 150) hpHist.addLast(new double[]{now, hp});
         while (!hpHist.isEmpty() && now - (long) hpHist.peekFirst()[0] > RAPID_WINDOW_MS) hpHist.pollFirst();
+        learnBurst(now, hp);
+    }
+
+    // ------------------------------------------------------------ 2.6.0 Akilli Kacis
+
+    /** Saldirgan sayilma suresi: EMP dusmanin kilidini kirinca "ates ediyor" gorunmez, son 3 sn'de ates eden sayilir. */
+    private static final long SMART_ATTACKER_MS = 3000;
+    /** Akilli Kacis: 1 sn'de bu kadar can dususu. */
+    private static final double SMART_DROP_1S = 0.15;
+    /** Akilli Kacis: olume kalan sure bunun altindaysa kacilir. */
+    private static final double SMART_TTD_SEC = 4.0;
+    /** Bilinmeyen oyuncunun 1 sn'lik en buyuk hasari (can orani) varsayilani. */
+    private static final double SMART_DEFAULT_BURST = 0.35;
+    /** Oyuncu adi -> bize 1 sn'de verdigi en buyuk can kaybi (oran). */
+    private final java.util.Map<String, Double> burst = new java.util.HashMap<>();
+    private String smartWhy;
+
+    /** Son ms icindeki can dususu (0..1). */
+    private double dropWithin(long ms) {
+        long now = Context.now();
+        double max = -1;
+        for (double[] h : hpHist) if (now - (long) h[0] <= ms) max = Math.max(max, h[1]);
+        return max < 0 ? 0 : Math.max(0, max - context.heroHp());
+    }
+
+    /** Bize ates eden oyuncu: su an ates eden ya da son 3 sn icinde ates etmis olan (EMP sonrasi da sayilir). */
+    private Player smartShooter() {
+        Player p = playerShooter();
+        if (p != null) return p;
+        Player r = context.recentAttacker(SMART_ATTACKER_MS);
+        return r != null && !context.petPlayer(r) && !context.isGroupMember(r) ? r : null;
+    }
+
+    /** Oyuncu ateş ederken 1 sn'lik en buyuk can kaybi ogrenilir (oyuncu basina). */
+    private void learnBurst(long now, double hp) {
+        try {
+            if (!context.config.ON_ENEMY.PLUS.SMART) return;
+            Player s = smartShooter();
+            if (s == null) return;
+            double d = dropWithin(1000);
+            if (d <= 0.02) return;
+            String n = Log.name(s);
+            Double old = burst.get(n);
+            if (old == null || d > old) {
+                burst.put(n, d);
+                if (old == null || d > old + 0.05)
+                    Log.d("DUSMAN", n + " 1 sn'de en fazla " + Log.pct(d) + " can kaybettirdi (Akilli Kacis ogrendi)");
+            }
+            if (burst.size() > 100) burst.clear();
+        } catch (RuntimeException ignored) {
+        }
+    }
+
+    /**
+     * Akilli Kacis: guclu dusman. Can 1 sn'de %15 dustu, olume kalan sure 4 sn alti ya da can o oyuncunun bilinen en
+     * buyuk 1 sn'lik hasarinin 1,2 katinin altinda. Nedeni smartWhy'a yazilir.
+     */
+    private boolean smartDanger() {
+        smartWhy = null;
+        try {
+            if (!context.config.ON_ENEMY.PLUS.SMART) return false;
+            Player s = smartShooter();
+            if (s == null || context.ownSilent(s)) return false;
+            double hp = context.heroHp();
+            double d1 = dropWithin(1000);
+            if (d1 >= SMART_DROP_1S) {
+                smartWhy = "can 1 sn'de " + Log.pct(d1) + " dustu";
+                return true;
+            }
+            double d15 = dropWithin(1500);
+            if (d15 > 0.03) {
+                double ttd = hp / (d15 / 1.5);
+                if (ttd < SMART_TTD_SEC) {
+                    smartWhy = "bu hizla " + String.format(java.util.Locale.ROOT, "%.1f", ttd) + " sn'de olunur";
+                    return true;
+                }
+            }
+            Double b = burst.get(Log.name(s));
+            double limit = 1.2 * (b == null ? SMART_DEFAULT_BURST : Math.max(b, 0.25)); // en az %30
+            if (hp < limit) {
+                smartWhy = "can " + Log.pct(hp) + " < " + Log.name(s) + " icin sinir " + Log.pct(limit)
+                        + (b == null ? " (varsayilan)" : " (1 sn'de en fazla " + Log.pct(b) + ")");
+                return true;
+            }
+        } catch (RuntimeException ignored) {
+        }
+        return false;
     }
 
     /** Son 2 sn'deki can dususu (0..1). */
@@ -127,6 +214,7 @@ public final class Escape {
      * bize ates eden bir oyuncu olmali). Kendi sirketi Yok Say'da da gecerli (12:22 CEPNI: can 5 sn'de %92 -> %47).
      */
     public boolean rapidLoss() {
+        if (smartDanger()) return true;
         try {
             int pct = context.config.ON_ENEMY.PLUS.RAPID_LOSS;
             if (pct <= 0 || playerShooter() == null) return false;
@@ -136,6 +224,23 @@ public final class Escape {
         } catch (RuntimeException e) {
             return false;
         }
+    }
+
+    /** Son 2 sn icinde bize ates eden, kendi sirketi oldugu bilinen en yakin oyuncu (Karsilik Ver icin). */
+    private Player ownShooter() {
+        Player best = null;
+        double bd = Double.MAX_VALUE;
+        for (Player p : context.ents.getPlayers()) {
+            if (p.getId() == context.hero.getId() || !p.isValid() || context.petPlayer(p) || context.isGroupMember(p)) continue;
+            if (!Boolean.TRUE.equals(context.firmKnown(p))) continue;
+            if (!p.isAttacking(context.hero) && !context.attackedBy(p, 2000)) continue;
+            double d = p.distanceTo(context.hero);
+            if (d < bd) {
+                bd = d;
+                best = p;
+            }
+        }
+        return best;
     }
 
     /** Bize su an ates eden en yakin oyuncu (PET ve grup uyeleri haric; Yok Say'daki kendi sirketi dahil). */
@@ -218,17 +323,29 @@ public final class Escape {
         // Hizli Can Kaybi: mod ne olursa olsun (Devam Et / Saldir / Yok Say dahil) saldirmadan portala kacilir.
         if (rapidLoss()) {
             Player s = playerShooter();
+            if (s == null && smartWhy != null) s = smartShooter();
             if (s != null) {
-                if (pvp.busy()) pvp.abort("hizli can kaybi");
-                Stats.count("hizli can kaybi");
-                Log.i("DUSMAN", Log.ship(s) + " ates ediyor: can 2 sn'de " + Log.pct(hpDrop()) + " dustu (Hizli Can Kaybi %"
-                        + oe.PLUS.RAPID_LOSS + "), saldirmadan portala kaciliyor | gemi can " + Log.pct(context.heroHp()));
+                String why = smartWhy != null ? "Akilli Kacis: " + smartWhy
+                        : "can 2 sn'de " + Log.pct(hpDrop()) + " dustu (Hizli Can Kaybi %" + oe.PLUS.RAPID_LOSS + ")";
+                if (pvp.busy()) pvp.abort(smartWhy != null ? "akilli kacis" : "hizli can kaybi");
+                Stats.count(smartWhy != null ? "akilli kacis" : "hizli can kaybi");
+                Log.i("DUSMAN", Log.ship(s) + " ates ediyor: " + why + ", saldirmadan portala kaciliyor | gemi can "
+                        + Log.pct(context.heroHp()));
                 running = new Job(s, true, false);
                 context.releaseAttack();
                 return running;
             }
         }
         if (pvp.busy()) return null;
+        // Kendi Sirketi = Karsilik Ver (2.6.0): bize ates eden kendi sirketinden oyuncuya ates ettigi surece karsilik
+        // verilir (kovalanmaz). Can Kacis Cani'nin altindaysa karsilik verilmez, asagida portala kacilir.
+        if (oe.OWN_MODE == BotPlusConfig.OwnMode.COUNTER && !hpLow()) {
+            Player own = ownShooter();
+            if (own != null) {
+                PlusModule.Job j = pvp.counter(own);
+                if (j != null) return j;
+            }
+        }
         if (oe.MODE == BotPlusConfig.OnEnemyMode.ATTACK && oe.PVP_ON) {
             PlusModule.Job j = pvp.check(oe.PVP);
             if (j != null) return j;
@@ -240,7 +357,7 @@ public final class Escape {
             // (olmek uzere) yine portala kacilir (12:22 CEPNI: Yok Say iken hic kacilmadan patlandi).
             Player own = playerShooter();
             if (own != null && context.ignoredOwn(own) && hpLow()) {
-                Log.i("DUSMAN", Log.ship(own) + " (kendi sirketi, Yok Say) ates ediyor ve can " + Log.pct(context.heroHp())
+                Log.i("DUSMAN", Log.ship(own) + " (kendi sirketi, " + oe.OWN_MODE + ") ates ediyor ve can " + Log.pct(context.heroHp())
                         + " <= %" + oe.HP + ": portala kaciliyor");
                 running = new Job(own, true, false);
                 context.releaseAttack();

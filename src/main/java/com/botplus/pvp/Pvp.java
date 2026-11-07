@@ -42,6 +42,16 @@ public class Pvp implements Configurable<Pvp.Config>, Behavior {
         @Dropdown
         public BotPlusConfig.PvpWho WHO = BotPlusConfig.PvpWho.ATTACKERS;
 
+        /** PvP Tarzi (2.6.0): Yorunge / Kacarak Vur / Mayin Tuzagi. */
+        @Option("botplus.pvp.style")
+        @Dropdown
+        public BotPlusConfig.PvpStyle STYLE = BotPlusConfig.PvpStyle.ORBIT;
+
+        /** PvP Secenekleri (2.6.0): Gucluyse Geri Cekil, Cani Azsa Kovala. */
+        @Option("botplus.pvp.options")
+        @Dropdown(multi = true)
+        public java.util.Set<BotPlusConfig.PvpOption> OPTIONS = java.util.EnumSet.of(BotPlusConfig.PvpOption.RETREAT_STRONG);
+
         /** Kimlere Saldir: varsayilan sadece dusman sirket (kendi sirketine ates seref kaybettirir). */
         @Option("botplus.pvp.firms")
         @Dropdown(multi = true)
@@ -97,6 +107,9 @@ public class Pvp implements Configurable<Pvp.Config>, Behavior {
                 : c.FIRMS.isEmpty() ? java.util.EnumSet.noneOf(BotPlusConfig.Firm.class) : java.util.EnumSet.copyOf(c.FIRMS);
         v.OFF_MAP = c.OFF_MAP;
         v.RSB = c.RSB;
+        v.STYLE = c.STYLE == null ? BotPlusConfig.PvpStyle.ORBIT : c.STYLE;
+        v.OPTIONS = c.OPTIONS == null || c.OPTIONS.isEmpty() ? java.util.EnumSet.noneOf(BotPlusConfig.PvpOption.class)
+                : java.util.EnumSet.copyOf(c.OPTIONS);
         return v;
     }
 }

@@ -312,16 +312,8 @@ public final class Settings {
             vc.STYLE = cb.STYLE != null ? cb.STYLE : BotPlusConfig.CombatStyle.ORBIT;
             vc.FIRST_HIT = cb.FIRST_HIT != null ? cb.FIRST_HIT : BotPlusConfig.FirstHit.NORMAL;
             vc.EAGLE_MIN_HP = cb.EAGLE_MIN_HP;
-            if (cb.ORBIT != null) vc.ORBIT = cb.ORBIT;
-            if (cb.PENDULUM != null) vc.PENDULUM = cb.PENDULUM;
-            if (cb.WAVE != null) vc.WAVE = cb.WAVE;
-            if (cb.HARBOR != null) vc.HARBOR = cb.HARBOR;
-            if (cb.CRESCENT != null) vc.CRESCENT = cb.CRESCENT;
-            if (cb.LOCK != null) {
-                if (cb.LOCK.WIDTH == null) cb.LOCK.WIDTH = BotPlusConfig.LockWidth.MEDIUM;
-                if (cb.LOCK.SWING == null) cb.LOCK.SWING = BotPlusConfig.LockSwing.MEDIUM;
-                vc.LOCK = cb.LOCK;
-            }
+            // 2.6.0: tarzlarin ince ayarlari (Yorunge, Sarkac, Dalga, Liman, Yarim Ay, Menzil Kilidi) menude yok: her
+            // zaman varsayilan degerler kullanilir (eski kayitli degerler okunmaz).
             if (cb.CLAW != null) vc.CLAW = cb.CLAW;
             vc.OPTIONS = cb.OPTIONS != null ? cb.OPTIONS : EnumSet.of(BotPlusConfig.CombatOption.PRE_LOCK);
             vc.FINISH_FIRST = cb.FINISH_FIRST;
@@ -342,6 +334,7 @@ public final class Settings {
         vp.REPAIR = c.PET_AYAR.REPAIR;
         vp.LOW_REPAIR = c.PET_AYAR.LOW_REPAIR;
         vp.LOW_HP = c.PET_AYAR.LOW_HP;
+        vp.REFRESH_MIN = c.PET_AYAR.REFRESH_MIN;
         EnemyLocator.Config el = locator == null ? null : locator.config;
         vp.TRAVEL_LOCATOR = el != null && el.GO != null && el.GO.TRAVEL_LOCATOR;
 

@@ -68,7 +68,7 @@ import java.util.Set;
 public class BotPlus implements Module, Behavior, Configurable<CoreConfig>, NpcFlags<BotPlusFlag>, GearSelector,
         LaserSelector, ShipModeSelector, Drawable, Listener, Installable {
 
-    public static final String VERSION = "2.5.0";
+    public static final String VERSION = "2.6.0";
     private static final int COMBAT_PET_DIST = 1500;
     private static final long BOX_WAIT_MS = 1200;
     private static final long BOX_COLLECT_MS = 6000;
@@ -466,6 +466,9 @@ public class BotPlus implements Module, Behavior, Configurable<CoreConfig>, NpcF
                 + " || dusman_saldirinca=" + c.ON_ENEMY.MODE + " kendi_sirketi=" + c.ON_ENEMY.OWN_MODE + " kacis_can=%" + c.ON_ENEMY.HP + " atlat=" + c.ON_ENEMY.DIST + "/"
                 + c.ON_ENEMY.CALM_SEC + "sn/hizliysa_portal=" + c.ON_ENEMY.FASTER_PORTAL + "/emp=" + c.ON_ENEMY.EMP + "@" + c.ON_ENEMY.EMP_DIST
                 + " kac=" + c.ON_ENEMY.ESCAPE_OPTS + " atlat_sec=" + c.ON_ENEMY.OUTRUN_OPTS + " baslangic=" + c.ON_ENEMY.START_OPTS + " akilli_rsb=" + (c.RSB != null && c.RSB.SMART)
+                + " akilli_kacis=" + (c.ON_ENEMY.PLUS != null && c.ON_ENEMY.PLUS.SMART)
+                + " pvp_tarz=" + (c.ON_ENEMY.PVP == null ? "-" : c.ON_ENEMY.PVP.STYLE + "/" + set(c.ON_ENEMY.PVP.OPTIONS))
+                + " PET_yenile=" + c.PET.REFRESH_MIN + "dk"
                 + " || dusmani_hatirla=" + (c.PROTECT.KILLER.ENABLED ? (c.REMEMBER_KILLERS ? "patlatan" : "") + (c.REMEMBER_ATTACKERS ? "+saldiran" : "") : "kapali") + " sure=" + c.PROTECT.KILLER.MINUTES + "dk"
                 + " || tamir=" + c.REPAIR.ENABLED + " baslama=%" + c.REPAIR.START_HP + " bitis=%" + c.REPAIR.END_HP
                 + " tamir_yeri=" + c.REPAIR.PLACE + " tamirde_kacin=" + set(c.REPAIR.AVOID) + " kacis_konfig=" + c.REPAIR.ENEMY_RUN_MODE
@@ -480,7 +483,7 @@ public class BotPlus implements Module, Behavior, Configurable<CoreConfig>, NpcF
                 + " takilma=" + c.PLUS.UNSTUCK() + " hizli_kilit=" + c.PLUS.FAST_LOCK() + " zayif_npc_once=" + c.PLUS.WEAK_FIRST()
                 + " verim=" + c.PLUS.STATS()
                 + " hiz_yetenegi=" + c.PLUS.SPEED_ABILITY() + " akilli_dolasma=" + c.PLUS.SMART_ROAM() + " radar=" + c.PLUS.RADAR()
-                + " || combat_plus=" + c.COMBAT.ENABLED + " tarz=" + c.COMBAT.STYLE + " yay_aci=" + c.COMBAT.ARC.ANGLE
+                + " || combat_plus=" + c.COMBAT.ENABLED + " tarz=" + c.COMBAT.STYLE + " ilk_vurus=" + c.COMBAT.FIRST_HIT + " yay_aci=" + c.COMBAT.ARC.ANGLE
                 + " guvenli_taraf=" + c.COMBAT.SAFE.SIDE + " aci_ogren=" + c.COMBAT.SAFE.LEARN + " aci_kilit=" + c.COMBAT.SAFE.LOCK
                 + " guvenli_yaklas=" + c.COMBAT.SAFE.APPROACH + " hasarda_cik=" + c.COMBAT.SAFE.EXIT + " menzil_disi_pay=" + c.COMBAT.OUT.MARGIN
                 + " secenekler=" + set(c.COMBAT.OPTIONS) + " bitir_sonra_tamir=" + c.COMBAT.FINISH_FIRST
@@ -515,6 +518,8 @@ public class BotPlus implements Module, Behavior, Configurable<CoreConfig>, NpcF
         if (msg == null) return;
         Log.game(msg);
         String low = msg.toLowerCase(Locale.ROOT);
+        // PvP oldurme dogrulamasi: oyuncu oldurulunce oyun Seref Puani mesaji yollar (2.6.0).
+        if (low.contains("şeref puan") || low.contains("seref puan") || low.contains("honor")) context.honorMsgAt = Context.now();
         if (low.contains("kara kutu") || low.contains("üpheli davran") || low.contains("suspicious")
                 || low.contains("black box") || low.contains("captcha")) {
             captchaUntil = Context.now() + CAPTCHA_PAUSE_MS;
@@ -1077,7 +1082,9 @@ public class BotPlus implements Module, Behavior, Configurable<CoreConfig>, NpcF
     }
 
     private void stoppedBehavior() {
+        long prevStop = stoppedAt;
         stoppedAt = Context.now();
+        if (stoppedAt - prevStop > 1500) context.stopStartedAt = stoppedAt; // yeni duraklama basladi
         context.lastStoppedAt = stoppedAt;
         boolean destroyed = context.repair.isDestroyed();
         boolean running;
@@ -1091,7 +1098,10 @@ public class BotPlus implements Module, Behavior, Configurable<CoreConfig>, NpcF
             // Bot durduruldu: is bitirilir (ana modda da; yeniden baslayinca sifirlanmis durumla eski ise devam edilmesin).
             endJob("bot durduruldu");
         }
+        // 2.6.0: can cok dusukken gelen duraklama cogunlukla olum ekranidir (DarkBot patlamayi birkac sn gec bildirir).
+        double lastHp = context.deaths.lastHp(5000);
         String why = destroyed ? "gemi patlamis" : !running ? "bot durduruldu"
+                : lastHp >= 0 && lastHp < 0.25 ? "olum ekrani olabilir (son can " + Log.pct(lastHp) + "), DarkBot'un bildirmesi bekleniyor"
                 : "oyun yukleniyor / baglanti penceresi (DarkBot modulu tiklemiyor)";
         Log.every("stopped", 10_000, "BEKLIYOR", "DarkBot BotPlus'i calistirmiyor: " + why);
         // Gemi oluyken DarkBot modulu tiklemez: calisan is burada bitirilir (canlaninca eski ise devam edilmesin).
@@ -1139,7 +1149,7 @@ public class BotPlus implements Module, Behavior, Configurable<CoreConfig>, NpcF
         if (pm != null) sb.append(" (is ").append(pm.age() / 1000).append(" sn)");
         try {
             sb.append(" | gemi can ").append(Log.pct(context.heroHp())).append(" kalkan ")
-                    .append(Log.pct(context.hero.getHealth().shieldPercent()))
+                    .append(Log.shield(context.hero.getHealth()))
                     .append(" konfig ").append(context.hero.getConfiguration())
                     .append(" formasyon ").append(context.hero.getFormation())
                     .append(" cephane ").append(context.hero.getLaser())
@@ -1667,9 +1677,13 @@ public class BotPlus implements Module, Behavior, Configurable<CoreConfig>, NpcF
         }
     }
 
-    private long petMissingSince, petMissingLogAt;
+    private long petMissingSince, petMissingLogAt, petRefreshAt;
 
-    /** PET 10 sn'dir yoksa (bot calisirken, calisma haritasinda) 30 sn'de bir loglanir ve PET tekrar acilir. */
+    /**
+     * PET 10 sn'dir yoksa (bot calisirken, calisma haritasinda) 30 sn'de bir nedeniyle loglanir. 2.6.0: PET
+     * "PET Acilmazsa Yenile" dakikasi boyunca acilamazsa oyun yenilenir (BotPlus Yenileme aciksa onun sekliyle,
+     * degilse DarkBot'un yenilemesiyle). Eskiden sadece zaten acik olan PET ayari tekrar aciliyordu (etkisizdi).
+     */
     private void tickPetPresence() {
         long now = Context.now();
         boolean active;
@@ -1687,10 +1701,30 @@ public class BotPlus implements Module, Behavior, Configurable<CoreConfig>, NpcF
         long sec = (now - petMissingSince) / 1000;
         if (sec < 10 || now - petMissingLogAt < 30_000) return;
         petMissingLogAt = now;
-        Log.i("PET", "PET yok " + sec + " sn, PET aciliyor");
+        String why;
         try {
-            context.pet.setEnabled(true);
-        } catch (RuntimeException ignored) {
+            why = !context.pet.isEnabled() ? "PET ayari kapali" : !context.pet.isRepaired() ? "PET patlamis (tamir gerekli)"
+                    : "PET acilamiyor (bekleme / yakit / oyun)";
+            if (!context.pet.isEnabled()) context.pet.setEnabled(true);
+        } catch (RuntimeException e) {
+            why = "PET durumu okunamadi";
+        }
+        int min = context.config.PET.REFRESH_MIN;
+        Log.i("PET", "PET yok " + sec + " sn: " + why + (min > 0 ? " | " + min + " dk olursa oyun yenilenecek" : ""));
+        if (min <= 0 || sec < min * 60L || now - petRefreshAt < 10 * 60_000L) return;
+        petRefreshAt = now;
+        petMissingSince = now;
+        Stats.count("PET yenileme");
+        if (context.config.RENEW.own()) {
+            Log.i("PET", "PET " + min + " dk acilmadi: BotPlus Yenileme ile yenileniyor (" + context.config.RENEW.MODE + ")");
+            context.refreshWantedAt = now;
+        } else {
+            Log.i("PET", "PET " + min + " dk acilmadi: DarkBot ile oyun yenileniyor");
+            try {
+                context.bot.handleRefresh();
+            } catch (RuntimeException e) {
+                Log.i("PET", "yenileme yapilamadi: " + e);
+            }
         }
     }
 

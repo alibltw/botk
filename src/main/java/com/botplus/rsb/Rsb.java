@@ -21,7 +21,16 @@ import eu.darkbot.api.extensions.Feature;
  * RSB ayari (gemi ayarlari) gecerlidir; ikisi de kapaliysa RSB atilmaz.
  */
 @Feature(name = "RSB", description = "BotPlus: tuşsuz RSB cephanesi (ilk atış normal, ateş durursa normale dönüş).")
-public class Rsb implements Configurable<Rsb.Config> {
+public class Rsb implements Configurable<Rsb.Config>, eu.darkbot.api.extensions.Behavior {
+
+    /**
+     * Davranis olarak gorunur (DarkBot'un eklenti listesinde "B" isareti; hangi modul secili olursa olsun acik).
+     * Mantik BotPlus'in tikinde calisir; burada ayrica bir sey yapilmaz.
+     */
+    @Override
+    public void onTickBehavior() {
+    }
+
 
     public volatile Config config = new Config();
 

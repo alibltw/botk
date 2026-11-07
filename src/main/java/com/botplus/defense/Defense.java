@@ -21,7 +21,16 @@ import java.util.Set;
 
 /** BotPlus alt modulu: EMP, Insta-Shield, PET HP Link, Dusmani Hatirla. */
 @Feature(name = "Defense", description = "BotPlus: EMP, Insta-Shield, PET HP Link, düşmanı hatırla.")
-public class Defense implements Configurable<Defense.Config> {
+public class Defense implements Configurable<Defense.Config>, eu.darkbot.api.extensions.Behavior {
+
+    /**
+     * Davranis olarak gorunur (DarkBot'un eklenti listesinde "B" isareti; hangi modul secili olursa olsun acik).
+     * Mantik BotPlus'in tikinde calisir; burada ayrica bir sey yapilmaz.
+     */
+    @Override
+    public void onTickBehavior() {
+    }
+
 
     public volatile Config config = new Config();
 
@@ -39,6 +48,16 @@ public class Defense implements Configurable<Defense.Config> {
         @Option("botplus.defense.enabled")
         public boolean ENABLED = false;
 
+        /** Kime Karsi: Karsi Saldiri hangi sirketten saldirana (varsayilan dusman sirket). */
+        @Option("botplus.protect.firms")
+        @Dropdown(multi = true)
+        public Set<BotPlusConfig.Firm> FIRMS = EnumSet.of(BotPlusConfig.Firm.ENEMY_FIRM);
+
+        /** Karsi Saldiri: dusman saldirinca (ya da biz saldirirken) roket / mayin / gemi yetenegi / Kacarken Zehirle. */
+        @Option("botplus.protect.counter")
+        @Dropdown(multi = true)
+        public Set<BotPlusConfig.Counter> COUNTER = EnumSet.noneOf(BotPlusConfig.Counter.class);
+
         @Option("botplus.protect.emp")
         public Item EMP = new Item(50);
 
@@ -48,6 +67,11 @@ public class Defense implements Configurable<Defense.Config> {
         @Option("botplus.protect.hp_link")
         public BotPlusConfig.HpLinkSet HP_LINK = new BotPlusConfig.HpLinkSet();
 
+        /** "Gemi Yetenegi" secildiyse kullanilacak yetenek. */
+        @Option("botplus.protect.ability")
+        @Dropdown
+        public eu.darkbot.api.game.items.SelectableItem.Ability ABILITY = eu.darkbot.api.game.items.SelectableItem.Ability.PUSAT_PLUS_SPEED_SAP;
+
         /** 2.1.0: BotPlus menusu -> Dusman Saldirinca -> Dusmani Hatirla'ya tasindi; eski deger bir kez aktarilir. */
         @Option.Ignore
         public BotPlusConfig.Killer KILLER = new BotPlusConfig.Killer();
@@ -56,8 +80,12 @@ public class Defense implements Configurable<Defense.Config> {
         @Option.Ignore
         public OnPlayer ON_PLAYER = OnPlayer.DROP_AWAY;
 
-        /** Oyuncuya ates edilirken (NPC Steal) RSB alt modulu aciksa RSB atilir. */
-        @Option("botplus.defense.rsb_players")
+        /** 2.4.0: Karsi Saldiri listesindeki "Kacarken Zehirle"ye tasindi (aciksa bir kez aktarilir). */
+        @Option.Ignore
+        public boolean INFECT = false;
+
+        /** 2.4.0: PvP Plus -> RSB Kullan'a tasindi (aciksa bir kez aktarilir). */
+        @Option.Ignore
         public boolean RSB_PLAYERS = false;
     }
 

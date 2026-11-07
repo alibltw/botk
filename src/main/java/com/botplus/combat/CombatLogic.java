@@ -493,7 +493,7 @@ public final class CombatLogic {
     void applyLearned(String name) {
         // Ogrenilen taraf menudeki "Guvenli Taraf" ayarina yazilmaz (Otomatik silinmesin); sadece Otomatik iken kullanilir.
         BotPlusConfig.SafeSettings c = context.config.COMBAT.SAFE;
-        if (c.LOCK || context.config.COMBAT.STYLE != BotPlusConfig.CombatStyle.SAFE) return;
+        if (c.LOCK || true /* Guvenli Aci tarzi kaldirildi */) return;
         if (c.SIDE == BotPlusConfig.SafeSide.AUTO) learned(name);
     }
 

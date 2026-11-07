@@ -116,12 +116,8 @@ public final class Steal {
         }
         if (c.FROM == BotPlusConfig.StealFrom.ENEMY && (p.getEntityInfo() == null || !p.getEntityInfo().isEnemy())) return Log.ship(p) + " dusman degil";
         // "Herkes" seciliyken de kendi sirketinden oyuncuya saldirilmaz (onur kaybi).
-        try {
-            if (p.getEntityInfo() != null && context.hero.getEntityInfo() != null
-                    && p.getEntityInfo().getFaction() == context.hero.getEntityInfo().getFaction())
-                return Log.ship(p) + " ayni sirket";
-        } catch (RuntimeException ignored) {
-        }
+        // Sirket bilgisi okunamazsa da (NONE) kendi sirketi sayilir (Context.ownFirm).
+        if (context.ownFirm(p)) return Log.ship(p) + " ayni sirket (" + context.firmInfo(p) + ")";
         return null;
     }
 

@@ -92,7 +92,14 @@ public class BotPlusConfig {
         if (PLUS == null) PLUS = new Plus();
         PLUS.fix();
         if (COMBAT == null) COMBAT = new Combat();
-        if (COMBAT.STYLE == null) COMBAT.STYLE = CombatStyle.ARC;
+        if (COMBAT.STYLE == null) COMBAT.STYLE = CombatStyle.ORBIT;
+        if (COMBAT.FIRST_HIT == null) COMBAT.FIRST_HIT = FirstHit.NORMAL;
+        if (COMBAT.ORBIT == null) COMBAT.ORBIT = new OrbitSettings();
+        if (COMBAT.PENDULUM == null) COMBAT.PENDULUM = new PendulumSettings();
+        if (COMBAT.WAVE == null) COMBAT.WAVE = new WaveSettings();
+        if (COMBAT.HARBOR == null) COMBAT.HARBOR = new HarborSettings();
+        if (COMBAT.CLAW == null) COMBAT.CLAW = new ClawSettings();
+        if (COMBAT.CLAW.ORDER == null) COMBAT.CLAW.ORDER = ClawOrder.LOW_HP;
         if (COMBAT.ARC == null) COMBAT.ARC = new ArcSettings();
         if (COMBAT.SAFE == null) COMBAT.SAFE = new SafeSettings();
         if (COMBAT.SAFE.SIDE == null) COMBAT.SAFE.SIDE = SafeSide.AUTO;
@@ -108,6 +115,8 @@ public class BotPlusConfig {
         if (REPAIR.AVOID != null) REPAIR.AVOID.remove(null);
         COMBAT.INWARD = COMBAT.OPTIONS.contains(CombatOption.INWARD);
         COMBAT.OUT_ON_DAMAGE = COMBAT.OPTIONS.contains(CombatOption.OUT_ON_DAMAGE);
+        COMBAT.OPENING_GUARD = COMBAT.OPTIONS.contains(CombatOption.OPENING_GUARD);
+        COMBAT.RICOCHET = COMBAT.OPTIONS.contains(CombatOption.RICOCHET);
         COMBAT.PRE_LOCK = COMBAT.OPTIONS.contains(CombatOption.PRE_LOCK);
         // Kacan NPC ayarlari Combat Plus altinda; eski CHASE alani kodun okudugu gorunum (menude yok, kaydedilmez).
         CHASE.ENABLED = COMBAT.CHASE;
@@ -170,6 +179,8 @@ public class BotPlusConfig {
     public transient OnEnemy ON_ENEMY = new OnEnemy();
     /** Dusmani Hatirla: saldiranlar da hatirlansin mi (gorunum). */
     public transient boolean REMEMBER_ATTACKERS;
+    /** Dusmani Hatirla: Gemini Patlatan secili mi. */
+    public transient boolean REMEMBER_KILLERS = true;
 
     @Option("botplus.locator")
     public Locator LOCATOR = new Locator();
@@ -217,6 +228,9 @@ public class BotPlusConfig {
     public static class Locator {
         @Option("botplus.locator.go")
         public boolean GO = false;
+
+        /** Dusman Bulucuya Direkt Git (calisma zamani): yolda kutu / baska NPC yok sayilir. */
+        public transient boolean DIRECT = false;
 
         @Option("botplus.locator.drop")
         public boolean DROP = false;
@@ -319,6 +333,13 @@ public class BotPlusConfig {
             ISH_WHEN.remove(null);
             HP_LINK.WHEN.remove(null);
         }
+
+        /** Dusmana Karsi, Gemi Yetenegi, Sadece Bulastir (kod gorunumu, Defense menusunden). */
+        public transient Set<Counter> COUNTER = EnumSet.noneOf(Counter.class);
+        public transient SelectableItem.Ability ABILITY = null;
+        public transient boolean INFECT = false;
+        /** Kimlere Karsilik (Defense menusunden): zehir / roket / mayin / yetenek hangi sirkete. */
+        public transient Set<Firm> FIRMS = EnumSet.of(Firm.ENEMY_FIRM);
     }
 
     public static class HpLinkSet {
@@ -341,6 +362,9 @@ public class BotPlusConfig {
         @Option("botplus.killer.minutes")
         @Number(min = 1, max = 60, step = 1)
         public int MINUTES = 10;
+
+        /** Kendi sirketinden saldiran / olduren icin hatirlama suresi (dk; BotPlus menusunden). */
+        public transient int OWN_MINUTES = 1;
     }
 
     public static class Steal {
@@ -473,7 +497,17 @@ public class BotPlusConfig {
 
         @Option("botplus.combat.style")
         @Dropdown
-        public CombatStyle STYLE = CombatStyle.ARC;
+        public CombatStyle STYLE = CombatStyle.ORBIT;
+
+        /** Yeni tarzlar ve ilk vurus (kod gorunumu, Combat menusunden kurulur). */
+        public transient FirstHit FIRST_HIT = FirstHit.NORMAL;
+        public transient int EAGLE_MIN_HP = 50;
+        public transient OrbitSettings ORBIT = new OrbitSettings();
+        public transient PendulumSettings PENDULUM = new PendulumSettings();
+        public transient WaveSettings WAVE = new WaveSettings();
+        public transient HarborSettings HARBOR = new HarborSettings();
+        public transient ClawSettings CLAW = new ClawSettings();
+        public transient boolean OPENING_GUARD = false, RICOCHET = false;
 
         @Option("botplus.chase.enabled")
         public boolean CHASE = false;
@@ -769,11 +803,15 @@ public class BotPlusConfig {
      * biri yeter). Hic secim yoksa "HP sinirin altinda" sayilir.
      */
     @Configuration("botplus.protect.when")
-    public enum When { HP_LOW, ENEMY, NPC }
+    public enum When { HP_LOW, ENEMY, NPC, ENEMY_FIRST, ATTACKING }
+
+    /** Koruma: dusmana karsi kullanilacaklar. */
+    @Configuration("botplus.protect.counter")
+    public enum Counter { DCR_250, R_IC3, PLD_8, SLM_01, IM_01, ABILITY, INFECT }
 
     /** Combat Plus secenekleri (coklu secim). */
     @Configuration("botplus.combat.options")
-    public enum CombatOption { INWARD, OUT_ON_DAMAGE, PRE_LOCK }
+    public enum CombatOption { INWARD, OUT_ON_DAMAGE, PRE_LOCK, OPENING_GUARD, RICOCHET }
 
     @Configuration("botplus.plus.hp_wait.which")
     public enum HpWaitWhich { FLAGGED, ALL }
@@ -790,7 +828,96 @@ public class BotPlusConfig {
 
     /** Combat Plus: dovus hareketi. */
     @Configuration("botplus.combat.style")
-    public enum CombatStyle { ARC, CIRCLE, HOLD, SAFE, OUTRANGE }
+    public enum CombatStyle { ORBIT, PENDULUM, WAVE, HARBOR }
+
+    /** Ilk Vurus: her yeni NPC'ye nasil girilir. */
+    @Configuration("botplus.combat.first_hit")
+    public enum FirstHit { NORMAL, EAGLE, VORTEX }
+
+    /** Kartal Pencesi: bayragi tutulan NPC'lerden once hangisi kesilir. */
+    @Configuration("botplus.combat.claw.order")
+    public enum ClawOrder { LOW_HP, RIVAL }
+
+    /** Yorunge ayarlari. */
+    public static class OrbitSettings {
+        @Option("botplus.combat.orbit.sweep")
+        @Number(min = 2, max = 8, step = 1)
+        public int SWEEP_SEC = 3;
+
+        @Option("botplus.combat.orbit.band")
+        @Number(min = 0, max = 80, step = 5)
+        public int BAND = 20;
+    }
+
+    /** Sarkac ayarlari. */
+    public static class PendulumSettings {
+        @Option("botplus.combat.pendulum.in_ms")
+        @Number(min = 500, max = 5000, step = 100)
+        public int IN_MS = 1200;
+
+        @Option("botplus.combat.pendulum.out_ms")
+        @Number(min = 500, max = 6000, step = 100)
+        public int OUT_MS = 1800;
+
+        @Option("botplus.combat.pendulum.zigzag")
+        @Number(min = 0, max = 45, step = 5)
+        public int ZIGZAG = 15;
+
+        @Option("botplus.combat.pendulum.finish_hp")
+        @Number(min = 0, max = 50, step = 5)
+        public int FINISH_HP = 15;
+    }
+
+    /** Dalga Yorungesi ayarlari. */
+    public static class WaveSettings {
+        @Option("botplus.combat.wave.period")
+        @Number(min = 2, max = 8, step = 1)
+        public int PERIOD_SEC = 3;
+
+        @Option("botplus.combat.wave.finish_hp")
+        @Number(min = 0, max = 50, step = 5)
+        public int FINISH_HP = 15;
+    }
+
+    /** Liman ayarlari. */
+    public static class HarborSettings {
+        @Option("botplus.combat.harbor.max")
+        @Number(min = 1000, max = 10000, step = 250)
+        public int MAX_DIST = 3000;
+    }
+
+    /** Kartal Pencesi: birden fazla NPC'nin bayragi alinip sirayla kesilir. */
+    public static class ClawSettings {
+        @Option("botplus.combat.claw.enabled")
+        public boolean ENABLED = false;
+
+        @Option("botplus.combat.claw.count")
+        @Number(min = 2, max = 4, step = 1)
+        public int COUNT = 2;
+
+        /** Bayrak suresi: oyunda NPC ilk vurana 10 sn kalir (menude yok, sabit). */
+        public static final int FLAG_SEC = 10;
+
+        /** Bayrak dusmeden bu kadar once tek atisla yenilenir (menude yok): her 6 sn'de bir kisa atis. */
+        public static final int RENEW_SEC = 4;
+        /** Kesilmeden bekleyen NPC en fazla bayrak suresi x bu kadar tutulur (menude yok): 20 sn. */
+        public static final int HOLD_MULT = 2;
+
+        @Option("botplus.combat.claw.range")
+        @Number(min = 1000, max = 5000, step = 250)
+        public int RANGE = 2500;
+
+        @Option("botplus.combat.claw.order")
+        @Dropdown
+        public ClawOrder ORDER = ClawOrder.LOW_HP;
+
+        @Option("botplus.combat.claw.rival_only")
+        public boolean RIVAL_ONLY = true;
+
+        @Option("botplus.combat.claw.drop_hp")
+        @Number(min = 0, max = 90, step = 5)
+        public int DROP_HP = 50;
+    }
 
     /**
      * Guvenli taraf: NPC'ye gore ekrandaki taraf. sector: 0 = sag, 1 = sag alt ... (ekranda y asagi, saat yonu).
@@ -816,11 +943,83 @@ public class BotPlusConfig {
 
     /** Dusman Saldirinca (BotPlus menusu): devam et / kac (portala) / hizla atlat (haritada). */
     @Configuration("botplus.on_enemy.mode")
-    public enum OnEnemyMode { CONTINUE, ESCAPE, OUTRUN }
+    public enum OnEnemyMode { CONTINUE, ESCAPE, OUTRUN, ATTACK }
+
+    /** Kimlere: oyuncunun sirketi (PvP saldirisi ve Koruma karsiligi). */
+    @Configuration("botplus.firm")
+    public enum Firm { ENEMY_FIRM, OWN_FIRM }
+
+    /** Saldir (PvP): kime saldirilir. */
+    @Configuration("botplus.on_enemy.pvp.who")
+    public enum PvpWho { ATTACKERS, LIST_ATTACKERS, LIST, ALL }
+
+    /** Saldir (PvP) ayarlari. */
+    public static class PvpSettings {
+        @Option("botplus.on_enemy.pvp.who")
+        @Dropdown
+        public PvpWho WHO = PvpWho.ATTACKERS;
+
+        @Option("botplus.on_enemy.pvp.tag")
+        @eu.darkbot.api.config.annotations.Tag(eu.darkbot.api.config.annotations.Tag.Default.NONE)
+        public eu.darkbot.api.config.types.PlayerTag TAG = null;
+
+        @Option("botplus.on_enemy.pvp.chase")
+        public boolean CHASE = true;
+
+        @Option("botplus.on_enemy.pvp.chase_sec")
+        @Number(min = 5, max = 120, step = 5)
+        public int CHASE_SEC = 20;
+
+        @Option("botplus.on_enemy.pvp.chase_dist")
+        @Number(min = 1000, max = 10000, step = 250)
+        public int CHASE_DIST = 3000;
+
+        @Option("botplus.on_enemy.pvp.conditional")
+        public boolean CONDITIONAL = true;
+
+        @Option("botplus.on_enemy.pvp.retreat_hp")
+        @Number(min = 0, max = 90, step = 5)
+        public int RETREAT_HP = 40;
+
+        @Option("botplus.on_enemy.pvp.crowd")
+        public boolean CROWD = true;
+
+        @Option("botplus.on_enemy.pvp.off_map")
+        public boolean OFF_MAP = false;
+        /** Kimlere Saldir (PvP Plus menusunden). */
+        public transient Set<Firm> FIRMS = EnumSet.of(Firm.ENEMY_FIRM);
+        /** RSB Kullan (PvP Plus menusunden): oyuncuya saldirirken RSB (RSB alt eklentisi aciksa). */
+        public transient boolean RSB = false;
+    }
+
+    /** Push Korumasi: ayni oyuncuyu tekrar tekrar oldurme / ondan olme siniri. */
+    public static class PushSettings {
+        @Option("botplus.push.enabled")
+        public boolean ENABLED = true;
+
+        @Option("botplus.push.kill_limit")
+        @Number(min = 1, max = 20, step = 1)
+        public int KILL_LIMIT = 2;
+
+        @Option("botplus.push.death_limit")
+        @Number(min = 1, max = 20, step = 1)
+        public int DEATH_LIMIT = 2;
+
+        @Option("botplus.push.window_h")
+        @Number(min = 1, max = 72, step = 1)
+        public int WINDOW_H = 24;
+
+        @Option("botplus.push.same_clan")
+        public boolean SAME_CLAN = true;
+    }
 
     /** Dusmani Hatirla: kimse / seni patlatan / patlatan + sana saldiran oyuncu. */
     @Configuration("botplus.on_enemy.remember")
     public enum RememberMode { OFF, KILLER, ATTACKER }
+
+    /** Dusmani Hatirla (2.4.0, coklu secim): hicbiri secili degilse kapali. */
+    @Configuration("botplus.on_enemy.remember_who")
+    public enum RememberWho { KILLER, ATTACKER }
 
     /** Dusman Saldirinca: kod gorunumu (CoreConfig'ten kurulur, kaydedilmez). */
     public static class OnEnemy {
@@ -831,7 +1030,32 @@ public class BotPlusConfig {
         public boolean FASTER_PORTAL = true;
         public boolean EMP = true;
         public int EMP_DIST = 2000;
+        public Set<EscapeOpt> ESCAPE_OPTS = EnumSet.allOf(EscapeOpt.class);
+        public Set<OutrunOpt> OUTRUN_OPTS = EnumSet.allOf(OutrunOpt.class);
+        public Set<StartOpt> START_OPTS = EnumSet.of(StartOpt.INSTANT_TURN);
+        /** Kendi Sirketi Saldirinca (BotPlus menusu). */
+        public OwnMode OWN_MODE = OwnMode.SAME;
+        public PvpSettings PVP = new PvpSettings();
+        /** PvP alt eklentisi acik mi (kapaliysa Saldir, Kac gibi). */
+        public boolean PVP_ON = false;
+        public PushSettings PUSH = new PushSettings();
     }
+
+    /** Kac Secenekleri: dusmandan portala kacarken portal secimi. */
+    @Configuration("botplus.on_enemy.escape_opts")
+    public enum EscapeOpt { CONE, RACE, SWITCH_PORTAL, PASS_JUMP, ELSE_OUTRUN }
+
+    /** Hizla Atlat Secenekleri: haritada dusmandan uzaklasirken yon secimi. */
+    @Configuration("botplus.on_enemy.outrun_opts")
+    public enum OutrunOpt { REVERSE, ANTI_CUT, EDGE_SLIDE, EMP_TURN, PORTAL_HOP, LATE_SPEED, SIDE_PASS }
+
+    /** Kendi Sirketi Saldirinca: ayni sirketten oyuncu ates edince. */
+    @Configuration("botplus.on_enemy.own_mode")
+    public enum OwnMode { SAME, IGNORE, FLEE }
+
+    /** Kacis Baslangici: dusman ilk ates ettiginde. */
+    @Configuration("botplus.on_enemy.start_opts")
+    public enum StartOpt { INSTANT_TURN, LOCK_BREAK }
 
     /** Calisma sekli: sadece NPC / sadece kutu / NPC + kutu. */
     @Configuration("botplus.work")

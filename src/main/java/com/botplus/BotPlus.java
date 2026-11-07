@@ -68,7 +68,7 @@ import java.util.Set;
 public class BotPlus implements Module, Behavior, Configurable<CoreConfig>, NpcFlags<BotPlusFlag>, GearSelector,
         LaserSelector, ShipModeSelector, Drawable, Listener, Installable {
 
-    public static final String VERSION = "2.1.0";
+    public static final String VERSION = "2.4.0";
     private static final int COMBAT_PET_DIST = 1500;
     private static final long BOX_WAIT_MS = 1200;
     private static final long BOX_COLLECT_MS = 6000;
@@ -124,8 +124,15 @@ public class BotPlus implements Module, Behavior, Configurable<CoreConfig>, NpcF
         public SelectableItem.Laser get() {
             try {
                 if (!context.config.ENABLED) return null;
+                // Bulastirma atisi (PIB-100) ve PvP'de Kalkan Emici (SAB-50): secici vermezse DarkBot geri degistirir.
+                SelectableItem.Laser forced = context.strikeLaser.get();
+                if (forced == null) forced = context.pvpLaser.get();
+                if (forced != null) return forced;
+                // PvP Plus -> RSB Kullan: oyuncuya saldirirken RSB alt modulu aciksa ve RSB hazirsa RSB (yoksa DarkBot).
+                if (context.pvpTarget.get() != null)
+                    return context.config.PROTECT.RSB_PLAYERS && context.config.RSB.ENABLED && rsbReady() ? rsb.rsbLaser() : null;
                 if (steal.firingAtEnemy(plusModule())) {
-                    // Defense -> Oyunculara RSB Kullan: RSB alt modulu aciksa ve RSB hazirsa oyuncuya RSB.
+                    // PvP Plus -> RSB Kullan: RSB alt modulu aciksa ve RSB hazirsa oyuncuya RSB.
                     if (context.config.PROTECT.RSB_PLAYERS && context.config.RSB.ENABLED && rsbReady())
                         return rsb.rsbLaser();
                     return context.config.STEAL.AMMO.laser;
@@ -451,14 +458,15 @@ public class BotPlus implements Module, Behavior, Configurable<CoreConfig>, NpcF
         BotPlusConfig c = context.config;
         return "mod=" + (self() ? "BotPlus" : "DarkBot") + " alt=" + subsLine() + " aktif=" + c.ENABLED + " siralama=" + c.SORT + "(" + context.botMode() + ")" + " kutu_mesafe=" + c.BOX_MAX_DIST + " yoldaki_kutu=" + c.BOX_WAY + " yolda_kacin=" + c.AVOID_UNLISTED + " hedef_yakinsa_kacinma=" + c.AVOID_NEAR_OFF + " hp_bekle=" + c.PLUS.TARGET.HP_WAIT.ENABLED + "/" + c.PLUS.TARGET.HP_WAIT.WHICH + "/%" + c.PLUS.TARGET.HP_WAIT.HP + " yenileme=" + c.RENEW.ENABLED
                 + " yenileme_sekli=" + c.RENEW.MODE
-                + " || bulucu_git=" + c.LOCATOR.GO + " birak=" + c.LOCATOR.DROP + " birak_can=%" + c.LOCATOR.DROP_HP
+                + " || bulucu_git=" + c.LOCATOR.GO + " bulucu_direkt=" + c.LOCATOR.DIRECT + " birak=" + c.LOCATOR.DROP + " birak_can=%" + c.LOCATOR.DROP_HP
                 + " savas_PET=" + (c.PET.COMBAT_CHANGE ? c.PET.COMBAT : "DEGISTIRME") + " PET_dusuk_tamir=" + c.PET.LOW_REPAIR + "/%" + c.PET.LOW_HP + " yol_bulucu=" + c.PET.TRAVEL_LOCATOR + " tamir_PET=" + c.PET.REPAIR + " uzaklasirken_koruma=" + c.LOCATOR.EVADE_GUARD + " yok_say=" + c.LOCATOR.IGNORE + " bulucu_tur_dondur=" + c.LOCATOR.ROTATE
                 + " || cal=" + c.STEAL.ENABLED + " kimden=" + c.STEAL.FROM + " NPC>=%" + c.STEAL.NPC_HP + " yontem=" + c.STEAL.ACTION
                 + " dusman=%" + c.STEAL.ENEMY_HP + " kovala=" + c.STEAL.CHASE_SEC + "sn gemi>=%" + c.STEAL.HERO_HP
                 + " cephane=" + c.STEAL.AMMO + " calarken_PET=" + c.STEAL.PET + " hangi=" + c.STEAL.WHICH
                 + " || dusman_saldirinca=" + c.ON_ENEMY.MODE + " kacis_can=%" + c.ON_ENEMY.HP + " atlat=" + c.ON_ENEMY.DIST + "/"
-                + c.ON_ENEMY.CALM_SEC + "sn/hizliysa_portal=" + c.ON_ENEMY.FASTER_PORTAL + "/emp=" + c.ON_ENEMY.EMP + "@" + c.ON_ENEMY.EMP_DIST + " akilli_rsb=" + (c.RSB != null && c.RSB.SMART)
-                + " || dusmani_hatirla=" + c.PROTECT.KILLER.ENABLED + " sure=" + c.PROTECT.KILLER.MINUTES + "dk"
+                + c.ON_ENEMY.CALM_SEC + "sn/hizliysa_portal=" + c.ON_ENEMY.FASTER_PORTAL + "/emp=" + c.ON_ENEMY.EMP + "@" + c.ON_ENEMY.EMP_DIST
+                + " kac=" + c.ON_ENEMY.ESCAPE_OPTS + " atlat_sec=" + c.ON_ENEMY.OUTRUN_OPTS + " baslangic=" + c.ON_ENEMY.START_OPTS + " akilli_rsb=" + (c.RSB != null && c.RSB.SMART)
+                + " || dusmani_hatirla=" + (c.PROTECT.KILLER.ENABLED ? (c.REMEMBER_KILLERS ? "patlatan" : "") + (c.REMEMBER_ATTACKERS ? "+saldiran" : "") : "kapali") + " sure=" + c.PROTECT.KILLER.MINUTES + "dk"
                 + " || tamir=" + c.REPAIR.ENABLED + " baslama=%" + c.REPAIR.START_HP + " bitis=%" + c.REPAIR.END_HP
                 + " tamir_yeri=" + c.REPAIR.PLACE + " tamirde_kacin=" + set(c.REPAIR.AVOID) + " kacis_konfig=" + c.REPAIR.ENEMY_RUN_MODE
                 + " tamir_npc_yakini=" + c.REPAIR.NEAR_NPC + " PET_gemi_tamiri=" + c.REPAIR.PET_SHIP
@@ -511,6 +519,20 @@ public class BotPlus implements Module, Behavior, Configurable<CoreConfig>, NpcF
                 || low.contains("black box") || low.contains("captcha")) {
             captchaUntil = Context.now() + CAPTCHA_PAUSE_MS;
             Log.i("CAPTCHA", "oyun captcha istiyor: \"" + msg + "\", BotPlus " + CAPTCHA_PAUSE_MS / 1000 + " sn hicbir sey yapmayacak");
+        }
+        // Portal atlamayi reddetti: kacis baska portala gecer (Portaldan Atlayamazsa Baska Portala). "Yakininda
+        // degilsin" reddi sayilmaz (portala varmadan basildi). Oyuna girdikten sonraki bekleme tum portallari kapatir.
+        if (context.safety instanceof PlusSafety && (low.contains("atlama imkans") || low.contains("atlay")
+                || low.contains("jump"))) {
+            PlusSafety ps = (PlusSafety) context.safety;
+            if (low.contains("kaçamazsın") || low.contains("kacamazsin") || low.contains("savaş esnasında")
+                    || low.contains("during combat") || low.contains("in combat")) {
+                ps.jumpRefusedCombat();
+            } else if (low.contains("saniye sonra") || low.contains("seconds after")) {
+                java.util.regex.Matcher m = java.util.regex.Pattern.compile("(\\d+)").matcher(low);
+                long sec = m.find() ? Long.parseLong(m.group(1)) : 15;
+                ps.jumpRefused(Math.min(60, sec) * 1000L, true);
+            }
         }
         if (low.contains("menzil d") || low.contains("out of range")) {
             outOfRange++;
@@ -766,6 +788,7 @@ public class BotPlus implements Module, Behavior, Configurable<CoreConfig>, NpcF
             String tn = tm == null ? "" : tm.getClass().getSimpleName().toLowerCase(Locale.ROOT);
             if (tn.contains("captcha") || tn.contains("disconnect")) return;
             protect.tick(alive);
+            if (alive) context.unlock.tick(false);
             context.trackCombat();
             rsb.tick();
         } catch (Throwable t) {
@@ -832,6 +855,7 @@ public class BotPlus implements Module, Behavior, Configurable<CoreConfig>, NpcF
         String curName = curMod == null ? "" : curMod.getClass().getSimpleName().toLowerCase(Locale.ROOT);
         boolean pressOk = !curName.contains("captcha") && !curName.contains("disconnect");
         if (pressOk) protect.tick(alive);
+        if (pressOk && alive) context.unlock.tick(self || plusModule() != null);
         context.trackCombat();
         if (pressOk) rsb.tick();
         tickPetPresence();

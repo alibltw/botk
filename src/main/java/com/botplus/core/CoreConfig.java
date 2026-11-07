@@ -13,6 +13,7 @@ import eu.darkbot.api.config.annotations.Dropdown;
 import eu.darkbot.api.config.annotations.Number;
 import eu.darkbot.api.config.annotations.Option;
 
+import java.util.EnumSet;
 import java.util.HashSet;
 import java.util.Set;
 
@@ -146,26 +147,55 @@ public class CoreConfig extends BotPlusConfig {
         @Dropdown
         public BotPlusConfig.OnEnemyMode MODE = BotPlusConfig.OnEnemyMode.CONTINUE;
 
-        /** Bu canin altinda dusman ates ediyorsa her secenekte portala kacilir (0: kapali). */
+        /** Kendi Sirketi Saldirinca: ayni sirketten oyuncu ates edince (ustteki ayar baska sirket icin). */
+        @Option("botplus.on_enemy.own_mode")
+        @Dropdown
+        public BotPlusConfig.OwnMode OWN = BotPlusConfig.OwnMode.SAME;
+
+        /** Bu canin altinda dusman ates ediyorsa her secenekte portala kacilir (0: kapali, 100: ilk atista). */
         @Option("botplus.on_enemy.hp")
-        @Number(min = 0, max = 90, step = 5)
+        @Number(min = 0, max = 100, step = 5)
         public int HP = 30;
+
+        /** Kac Secenekleri: portala kacarken portal secimi. */
+        @Option("botplus.on_enemy.escape_opts")
+        @Dropdown(multi = true)
+        public Set<EscapeOpt> KAC = EnumSet.allOf(EscapeOpt.class);
 
         @Option("botplus.on_enemy.outrun")
         public OutrunSet ATLAT = new OutrunSet();
 
+        /** Kacis Baslangici: dusman ilk ates ettiginde. */
+        @Option("botplus.on_enemy.start_opts")
+        @Dropdown(multi = true)
+        public Set<StartOpt> BASLANGIC = EnumSet.of(StartOpt.INSTANT_TURN);
+
         /** Dusmani Hatirla (2.1.0'da Defense'ten tasindi): hatirlanan oyuncu gorulunce uzaklasilir, yaninda NPC secilmez. */
         @Option("botplus.on_enemy.remember")
-        @Dropdown
+        @Dropdown(multi = true)
+        public Set<BotPlusConfig.RememberWho> HATIRLA = EnumSet.of(BotPlusConfig.RememberWho.KILLER);
+
+        /** 2.4.0 oncesi tek secim (Kapali / Seni Patlatan / Patlatan + Saldiran): bir kez HATIRLA'ya tasinir. */
+        @Option.Ignore
         public BotPlusConfig.RememberMode REMEMBER = BotPlusConfig.RememberMode.KILLER;
 
         @Option("botplus.on_enemy.remember_min")
         @Number(min = 1, max = 60, step = 1)
         public int REMEMBER_MIN = 10;
+
+        /** Kendi sirketinden saldiran ayri sure hatirlanir. */
+        @Option("botplus.on_enemy.remember_own_min")
+        @Number(min = 1, max = 60, step = 1)
+        public int REMEMBER_OWN_MIN = 1;
     }
 
     /** Hizla Atlat: haritada dusmandan hizla uzaklasma. */
     public static class OutrunSet {
+        /** Hizla Atlat Secenekleri: haritada dusmandan uzaklasirken yon secimi. */
+        @Option("botplus.on_enemy.outrun_opts")
+        @Dropdown(multi = true)
+        public Set<OutrunOpt> SECENEK = EnumSet.allOf(OutrunOpt.class);
+
         /** Dusmana bu kadar uzaklasinca atlatildi sayilir. */
         @Option("botplus.on_enemy.outrun.dist")
         @Number(min = 1500, max = 6000, step = 250)
@@ -287,7 +317,17 @@ public class CoreConfig extends BotPlusConfig {
         if (DUSMAN == null) DUSMAN = new OnEnemySet();
         if (DUSMAN.MODE == null) DUSMAN.MODE = BotPlusConfig.OnEnemyMode.CONTINUE;
         if (DUSMAN.ATLAT == null) DUSMAN.ATLAT = new OutrunSet();
+        if (DUSMAN.OWN == null) DUSMAN.OWN = BotPlusConfig.OwnMode.SAME;
+        DUSMAN.REMEMBER_OWN_MIN = Math.max(1, Math.min(60, DUSMAN.REMEMBER_OWN_MIN));
+        if (DUSMAN.KAC == null) DUSMAN.KAC = EnumSet.allOf(EscapeOpt.class);
+        if (DUSMAN.BASLANGIC == null) DUSMAN.BASLANGIC = EnumSet.of(StartOpt.INSTANT_TURN);
+        if (DUSMAN.ATLAT.SECENEK == null) DUSMAN.ATLAT.SECENEK = EnumSet.allOf(OutrunOpt.class);
+        DUSMAN.KAC.remove(null);
+        DUSMAN.BASLANGIC.remove(null);
+        DUSMAN.ATLAT.SECENEK.remove(null);
         if (DUSMAN.REMEMBER == null) DUSMAN.REMEMBER = BotPlusConfig.RememberMode.KILLER;
+        if (DUSMAN.HATIRLA == null) DUSMAN.HATIRLA = EnumSet.of(BotPlusConfig.RememberWho.KILLER);
+        DUSMAN.HATIRLA.remove(null);
         if (HP_BEKLE == null) HP_BEKLE = new HpWaitSet();
         if (HP_BEKLE.WHICH == null) HP_BEKLE.WHICH = HpWaitWhich.FLAGGED;
         if (HP_BEKLE.MODE == null) HP_BEKLE.MODE = HpWaitMode.NEAR;

@@ -73,6 +73,10 @@ public final class DeathLog {
 
     /** Gemi patladi: son 30 sn ozeti loga (OLUM). Ornekler silinir. */
     public void report(String killer, long deathAt) {
+        try {
+            if (killer != null && !killer.isEmpty()) context.push.died(killer);
+        } catch (RuntimeException ignored) {
+        }
         // Olumden sonraki ornekler (canlandiktan sonra alinmis) atilir; olumden 10 sn'den eski ornekler bu olumu
         // anlatmaz (bot durmustu / gecici moduldeydi).
         while (!samples.isEmpty() && samples.peekLast().at > deathAt) samples.pollLast();

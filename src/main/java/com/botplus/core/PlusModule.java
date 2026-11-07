@@ -49,6 +49,10 @@ public final class PlusModule {
         default boolean safety() {
             return true;
         }
+
+        /** Her tikte kacis sisteminden once (kacis portala giderken de) calisir. */
+        default void beforeSafety() {
+        }
     }
 
     private final Context context;
@@ -148,6 +152,11 @@ public final class PlusModule {
         if (!escaping && !context.safetyEscaping() && startMap != -1 && mapId() != startMap) {
             finish("harita degisti (" + (context.star.getCurrentMap() == null ? "?" : context.star.getCurrentMap().getName()) + ")");
             return;
+        }
+        try {
+            job.beforeSafety();
+        } catch (RuntimeException e) {
+            Log.every("beforesafety" + job.name(), 60_000, job.name(), "hata: " + e);
         }
         if (job.safety() && !context.safetyTick()) {
             if (!escaping) {

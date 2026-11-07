@@ -39,7 +39,7 @@ public final class PvpLogic {
     public PlusModule.Job check(BotPlusConfig.PvpSettings s) {
         Player target = pvpCandidate(s);
         if (target == null) return null;
-        Stats.count("pvp");
+        Stats.count("com/botplus/pvp");
         Log.i("SALDIR", Log.ship(target) + " hedef alindi (" + (int) target.distanceTo(context.hero) + " uzakta) | kime: "
                 + s.WHO + " | gemi can " + Log.pct(context.heroHp()));
         pvp = new PvpJob(target);

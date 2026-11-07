@@ -18,7 +18,16 @@ import eu.darkbot.api.extensions.Feature;
 
 /** BotPlus alt modulu: NPC Cal (baskasinin vurdugu NPC). */
 @Feature(name = "NPC Steal", description = "BotPlus: başkasının vurduğu NPC'yi çalma.")
-public class NpcSteal implements Configurable<NpcSteal.Config> {
+public class NpcSteal implements Configurable<NpcSteal.Config>, eu.darkbot.api.extensions.Behavior {
+
+    /**
+     * Davranis olarak gorunur (DarkBot'un eklenti listesinde "B" isareti; hangi modul secili olursa olsun acik).
+     * Mantik BotPlus'in tikinde calisir; burada ayrica bir sey yapilmaz.
+     */
+    @Override
+    public void onTickBehavior() {
+    }
+
 
     public volatile Config config = new Config();
 

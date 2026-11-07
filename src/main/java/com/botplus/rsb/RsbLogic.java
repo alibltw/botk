@@ -175,7 +175,9 @@ public final class RsbLogic {
             Object ht = context.hero.getTarget();
             boolean locked = context.attack.isLocked() || (ht instanceof Npc && ((Npc) ht).getId() == npc.getId());
             if (!locked) return "kilit yok";
-            if (context.hero.distanceTo(npc) > npc.getInfo().getRadius()) return "menzil disi";
+            // Baska modul (ornegin Galaxy Gate) dovusurken mesafe NPC listesindeki menzile gore degil o modulun
+            // kendi mesafesidir: menzil yerine NPC'nin gercekten hasar almasina bakilir (eskiden tablo menzili
+            // disinda diye RSB hic atilmiyordu).
             if (trackId != npc.getId() || now - dropAt > DROP_MS) return "hasar yok";
         }
         if (npc.hasEffect(EntityEffect.NPC_ISH)) return "NPC ISH";

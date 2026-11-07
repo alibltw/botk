@@ -1,12 +1,7 @@
 package com.botplus.core;
 
-import com.botplus.*;
-import com.botplus.combat.*;
-import com.botplus.defense.*;
 import com.botplus.locator.*;
-import com.botplus.repair.*;
-import com.botplus.rsb.*;
-import com.botplus.steal.*;
+import com.botplus.push.PushGuard;
 
 import eu.darkbot.api.PluginAPI;
 import eu.darkbot.api.config.ConfigSetting;
@@ -84,6 +79,140 @@ public final class Context {
     public final Bans bans = new Bans();
     /** Olum raporu: son 30 sn ornekleri. */
     public final DeathLog deaths = new DeathLog(this);
+    /** Push Korumasi: oyuncu bazinda oldurme / olme kaydi. */
+    public final PushGuard push = new PushGuard(this::heroInfoForPush, this::pushSettings);
+    private eu.darkbot.api.game.other.EntityInfo heroInfoForPush() {
+        return hero.getEntityInfo();
+    }
+
+    private BotPlusConfig.PushSettings pushSettings() {
+        return config.ON_ENEMY.PUSH;
+    }
+
+    /** Saldir (PvP) isinin hedefi (yoksa null; Escape kurar). */
+    public volatile java.util.function.Supplier<Player> pvpTarget = () -> null;
+    /** Bulastirma atisi / PvP'nin istedigi cephane (yoksa null; BotPlus'in cephane secicisi kullanir). */
+    public volatile java.util.function.Supplier<eu.darkbot.api.game.items.SelectableItem.Laser> strikeLaser = () -> null;
+    public volatile java.util.function.Supplier<eu.darkbot.api.game.items.SelectableItem.Laser> pvpLaser = () -> null;
+
+    /**
+     * Saldiri tamamen birakilir: ates tusu kapatilir, saldiri hedefi ve geminin kendi hedefi temizlenir (sadece
+     * stopAttack + setTarget(null) yetmiyordu: saldiri denemesi suruyorken ates acik kalabiliyordu).
+     */
+    public void releaseAttack() {
+        unlock.request("hedef birakildi");
+    }
+
+    /**
+     * Kilit Birakma rutini (CTRL ac / kapa kontrollu, kilit oyuncudaysa yakindaki NPC secilir). DarkBot'un
+     * stopAttack'i kisa sure icinde ikinci komutu yutuyordu; bkz. LockRelease.
+     */
+    public final LockRelease unlock = new LockRelease(this);
+
+    // ---------------------------------------------------------------- Kimlere (sirket)
+
+    /** Kendi sirketimizin oyuncusu kendi sirketine 5 sn ates etmezse ona ates edilmez (seref kaybi). */
+    public static final long OWN_FIRM_FIRE_MS = 5000;
+
+    /** Kendi sirketimizden mi: ayni sirket ve klan savasi yok (oyunda saldirmak seref kaybettirir). */
+    public boolean ownFirm(Player p) {
+        Boolean k = firmKnown(p);
+        return k == null || k; // bilinmiyorsa (yok / NONE) kendi sirketi gibi davranilir: dosta ates edilmesin
+    }
+
+    /**
+     * Sirket bilgisi: true kendi sirketi, false dusman sirket, null bilinmiyor (oyun henuz yollamadi / NONE).
+     * Bilinmeyen kaydedilmez: bilgi gelince yeniden bakilir.
+     */
+    public Boolean firmKnown(Player p) {
+        if (p == null) return null;
+        try {
+            // Klan savasi her zaman once: onbellekte kendi sirketi olarak kalmis olsa da savastaki klan dusmandir.
+            eu.darkbot.api.game.other.EntityInfo wi = p.getEntityInfo();
+            if (wi != null && wi.getClanDiplomacy() == eu.darkbot.api.game.other.EntityInfo.Diplomacy.WAR) {
+                ownIds.remove(p.getId());
+                return false;
+            }
+        } catch (RuntimeException ignored) {
+        }
+        if (ownIds.contains(p.getId())) return true;
+        try {
+            eu.darkbot.api.game.other.EntityInfo i = p.getEntityInfo(), me = hero.getEntityInfo();
+            eu.darkbot.api.game.other.EntityInfo.Faction f = i == null ? null : i.getFaction();
+            eu.darkbot.api.game.other.EntityInfo.Faction mf = me == null ? null : me.getFaction();
+            if (mf != null && mf != eu.darkbot.api.game.other.EntityInfo.Faction.NONE) heroFaction = mf;
+            else mf = heroFaction;
+            // Bilinmiyorsa (yok / NONE: harita degisiminden sonra bir sure boyle okunabiliyor) kendi sirketi sayilir:
+            // yanlislikla dosta ates edilmesin (06:13'te harita donusunden sonra dosta zehir atilmisti).
+            if (f == null || mf == null || f == eu.darkbot.api.game.other.EntityInfo.Faction.NONE
+                    || mf == eu.darkbot.api.game.other.EntityInfo.Faction.NONE) return null;
+            if (i.getClanDiplomacy() == eu.darkbot.api.game.other.EntityInfo.Diplomacy.WAR) return false;
+            boolean own = f == mf;
+            // Bir kez kendi sirketi goruldu: oturum boyunca oyle hatirlanir (sonra yanlis okunsa da).
+            if (own) {
+                if (ownIds.size() > 500) ownIds.clear();
+                ownIds.add(p.getId());
+            }
+            return own;
+        } catch (RuntimeException e) {
+            return null;
+        }
+    }
+
+    /** Kendi sirketi oldugu bir kez dogrulanan oyuncular (id). */
+    private final java.util.Set<Integer> ownIds = new java.util.HashSet<>();
+    /** Son bilinen kendi sirketimiz (gemi bilgisi bir an NONE okunursa). */
+    private eu.darkbot.api.game.other.EntityInfo.Faction heroFaction;
+
+    /** Kendi Sirketi Saldirinca = Yok Say ve bu oyuncu kendi sirketimizden: kacis / takip / tehdit yok. */
+    public boolean ignoredOwn(Player p) {
+        // Sadece kendi sirketi oldugu BILINENLER yok sayilir (bilinmeyen dusman olabilir: ondan yine kacilir).
+        return p != null && config.ON_ENEMY.OWN_MODE == BotPlusConfig.OwnMode.IGNORE && Boolean.TRUE.equals(firmKnown(p));
+    }
+
+    /** Sirket bilgisi (log icin): "kendi sirketi (MMO)" / "dusman sirket (EIC)". */
+    public String firmInfo(Player p) {
+        String f;
+        try {
+            f = String.valueOf(p.getEntityInfo().getFaction());
+        } catch (RuntimeException e) {
+            f = "?";
+        }
+        Boolean k = firmKnown(p);
+        return (k == null ? "sirketi bilinmiyor (kendi sirketi sayildi)" : k ? "kendi sirketi" : "dusman sirket")
+                + " (" + f + "/" + heroFaction + ")";
+    }
+
+    /**
+     * Kimlere: bu oyuncuya ates edilebilir mi (PvP saldirisi, zehir, roket, mayin, yetenek). Dusman sirket: secildiyse.
+     * Kendi sirketi: secildiyse VE son 5 sn icinde bize ates ettiyse (bayragi dusunce ates edilmez).
+     */
+    public boolean mayFire(Player p, java.util.Set<BotPlusConfig.Firm> firms) {
+        if (p == null || firms == null) return false;
+        if (!ownFirm(p)) return firms.contains(BotPlusConfig.Firm.ENEMY_FIRM);
+        // Kendi Sirketi Saldirinca: Yok Say / Sadece Kac seciliyse kendi sirketine hic ates edilmez.
+        if (config.ON_ENEMY.OWN_MODE != BotPlusConfig.OwnMode.SAME) return false;
+        return firms.contains(BotPlusConfig.Firm.OWN_FIRM) && attackedBy(p, OWN_FIRM_FIRE_MS);
+    }
+
+    /** Ada gore kendi sirketi mi (gorunuyorsa; gorunmuyorsa dusman sirket sayilir: dusman suresi uygulanir). */
+    public Boolean ownFirmByName(String name) {
+        if (name == null) return null;
+        try {
+            for (Player p : ents.getPlayers())
+                if (p.getEntityInfo() != null && name.equals(p.getEntityInfo().getUsername())) return firmKnown(p);
+        } catch (RuntimeException ignored) {
+        }
+        return null;
+    }
+
+    /** PET (oyuncu gibi gorunur, adi "Ad [seviye]"). */
+    public boolean petPlayer(Player p) {
+        return p != null && p.getEntityInfo() != null && petName(p.getEntityInfo().getUsername());
+    }
+
+    /** DarkBot ayarlari (oyuncu listesi / etiketler icin). */
+    public ConfigAPI configApiRef;
     /** Oyunun son "Menzil disi" mesaji (RSB / ates bekcisi bu sureyi RSB hatasi saymaz). */
     public volatile long lastOutOfRangeAt;
     /** Bos Harita Modu (BotPlus kurar); null olabilir. */
@@ -118,8 +247,15 @@ public final class Context {
             // BotPlus'in kacis sistemi: DarkBot'un SafetyFinder'i, dusmandan kacma karari BotPlus'ta (PlusSafety).
             PlusSafety ps = api.requireInstance(PlusSafety.class);
             ps.escapeWanted = () -> escapeWanted.getAsBoolean();
-            ps.threat = s -> s instanceof Player && attackedBy((Player) s, ESCAPE_MEMORY_MS);
+            ps.threat = s -> s instanceof Player && attackedBy((Player) s, ESCAPE_MEMORY_MS) && !ignoredOwn((Player) s);
             ps.inCharge = () -> now() - plusInChargeAt < 1000;
+            ps.options = () -> this.config.ON_ENEMY.ESCAPE_OPTS;
+            // Harita degisim olayi icin acik kayit (DarkBot zaten kaydediyorsa yeniden kaydedilir, cift olmaz).
+            try {
+                api.requireAPI(eu.darkbot.api.managers.EventBrokerAPI.class).registerListener(ps);
+            } catch (Throwable t) {
+                System.out.println("[BotPlus] GUVENLIK | kacis sistemi olay kaydi yapilamadi: " + t);
+            }
             sf = ps;
         } catch (Throwable t) {
             System.out.println("[BotPlus] GUVENLIK | BotPlus kacis sistemi yuklenemedi, DarkBot'un kacis sistemi kullanilacak: " + t);
@@ -132,6 +268,7 @@ public final class Context {
         this.safety = sf;
 
         ConfigAPI configApi = api.requireAPI(ConfigAPI.class);
+        this.configApiRef = configApi;
         this.abilityKey = configApi.requireConfig("loot.ship_ability");
         this.repairRange = configApi.requireConfig("general.safety.repair_hp_range");
         this.runMode = configApi.requireConfig("general.run");
@@ -697,7 +834,8 @@ public final class Context {
     public boolean isEnemyPlayer(Player p) {
         return p != null && p.getId() != hero.getId() && p.isValid() && p.getEntityInfo() != null
                 && !petName(p.getEntityInfo().getUsername())
-                && (p.getEntityInfo().isEnemy() || isKiller(p) || (p.isAttacking(hero) && !isFriend(p)));
+                && (p.getEntityInfo().isEnemy() || isKiller(p)
+                || ((p.isAttacking(hero) || attackedBy(p, THREAT_MEMORY_MS)) && !isFriend(p)));
     }
 
     /** Hatirlanan olduren bu noktaya yakin mi (null: yok). */
@@ -789,7 +927,7 @@ public final class Context {
         Player near = null;
         double nd = Double.MAX_VALUE;
         for (Player p : ents.getPlayers()) {
-            if (!isEnemyPlayer(p)) continue;
+            if (!isEnemyPlayer(p) || ignoredOwn(p)) continue;
             double d = p.distanceTo(hero);
             // Bize ates eden dusman, uzakligi ne olursa olsun (DarkBot'ta "saldiriyor" mesafeden bagimsiz bir bayrak;
             // eskiden 2000 siniri vardi: dusman 2000'in hemen disina cikinca bulucu ayni sinyale geri donuyordu).
@@ -828,10 +966,32 @@ public final class Context {
             for (Player p : ents.getPlayers()) {
                 if (!isEnemyPlayer(p) || !p.isAttacking(hero)) continue;
                 lastAttackBy.put(p.getId(), now);
+                // Takip: son ates zamani tutulur, sure her kontrolde ayardan hesaplanir (ayar degisince hemen gecerli).
+                if (!ignoredOwn(p)) {
+                    trackUntil.put(p.getId(), now);
+                    Boolean own = firmKnown(p);
+                    if (own != null) trackOwn.put(p.getId(), own); // bilinmiyorsa kaydedilmez, gorulunce yazilir
+                }
                 attackerAt.put(p.getId(), Location.of(p.getX(), p.getY()));
                 attackerMap.put(p.getId(), mapIdNow());
                 if (p.getEntityInfo() != null && p.getEntityInfo().getUsername() != null)
                     attackerName.put(p.getId(), p.getEntityInfo().getUsername());
+            }
+            // Saldirani Takip: takip edilen (hatirlama suresindeki) saldiranin gorundugu her an konumu yazilir.
+            if (!trackUntil.isEmpty()) {
+                int map = mapIdNow();
+                for (Player p : ents.getPlayers()) {
+                    if (!p.isValid() || !tracked(p)) continue;
+                    if (!trackOwn.containsKey(p.getId())) {
+                        Boolean own = firmKnown(p);
+                        if (own != null) trackOwn.put(p.getId(), own);
+                    }
+                    trackSeen.put(p.getId(), Location.of(p.getX(), p.getY()));
+                    trackSeenAt.put(p.getId(), now);
+                    trackSeenMap.put(p.getId(), map);
+                    if (p.getEntityInfo() != null && p.getEntityInfo().getUsername() != null)
+                        trackName.put(p.getId(), p.getEntityInfo().getUsername());
+                }
             }
         } catch (RuntimeException ignored) {
         }
@@ -842,8 +1002,81 @@ public final class Context {
             attackerAt.keySet().retainAll(lastAttackBy.keySet());
             attackerMap.keySet().retainAll(lastAttackBy.keySet());
             attackerName.keySet().retainAll(lastAttackBy.keySet());
+            trackUntil.entrySet().removeIf(e -> now - e.getValue() > trackMs(trackOwn.getOrDefault(e.getKey(), false)));
+            trackOwn.keySet().retainAll(trackUntil.keySet());
+            trackSeen.keySet().retainAll(trackUntil.keySet());
+            trackSeenAt.keySet().retainAll(trackUntil.keySet());
+            trackSeenMap.keySet().retainAll(trackUntil.keySet());
+            trackName.keySet().retainAll(trackUntil.keySet());
         }
         dangerZones.removeIf(z -> z.until < now);
+    }
+
+    // ---------------------------------------------------------------- Saldirani Takip
+
+    /** Saldiran gorunurken ona bu kadar yakin NPC / sinyal / kacis noktasi secilmez. */
+    public static final double TRACK_AVOID_R = 2500;
+    /** Saldiran gorus disina cikinca son goruldugu yer bu kadar sure yasak. */
+    public static final long TRACK_HIDDEN_MS = 60_000;
+    /** Oyuncu id -> bize son ates ettigi an (takip bu andan itibaren Dusmani Hatirla suresi kadar). */
+    private final java.util.Map<Integer, Long> trackUntil = new java.util.HashMap<>();
+    /** Oyuncu id -> kendi sirketi mi (ayri hatirlama suresi). */
+    private final java.util.Map<Integer, Boolean> trackOwn = new java.util.HashMap<>();
+    private final java.util.Map<Integer, Location> trackSeen = new java.util.HashMap<>();
+    private final java.util.Map<Integer, Long> trackSeenAt = new java.util.HashMap<>();
+    private final java.util.Map<Integer, Integer> trackSeenMap = new java.util.HashMap<>();
+    private final java.util.Map<Integer, String> trackName = new java.util.HashMap<>();
+
+    /**
+     * Hatirlama suresi: dusman sirket "Dusmani Hatirla" dakikasi, kendi sirketi "Kendi Sirketini Hatirla" dakikasi.
+     * Dusmani Hatirla kapaliysa kisa takip (2 dk / kendi sirketi icin ayari).
+     */
+    public long trackMs(boolean own) {
+        try {
+            BotPlusConfig.Killer k = config.PROTECT.KILLER;
+            if (own) return Math.max(1, k == null ? 1 : k.OWN_MINUTES) * 60_000L;
+            if (k == null || !k.ENABLED) return 2 * 60_000L;
+            return Math.max(1, k.MINUTES) * 60_000L;
+        } catch (RuntimeException e) {
+            return 2 * 60_000L;
+        }
+    }
+
+    /** Bu oyuncu bize saldirdi ve hala takip ediliyor mu (sure ayardan anlik). */
+    public boolean tracked(Player p) {
+        return p != null && tracked(p.getId());
+    }
+
+    private boolean tracked(int id) {
+        Long t = trackUntil.get(id);
+        return t != null && now() - t < trackMs(trackOwn.getOrDefault(id, false));
+    }
+
+    /**
+     * Takip edilen saldiran bu noktaya r'den yakin mi (nedeni, degilse null): gorunurse canli konumu, gorunmuyorsa
+     * son goruldugu yer (TRACK_HIDDEN_MS boyunca). exceptId: bu oyuncu sayilmaz (-1: hepsi).
+     */
+    public String trackedZone(Locatable l, double r, int exceptId) {
+        if (l == null || trackUntil.isEmpty()) return null;
+        long now = now();
+        java.util.Set<Integer> visible = new java.util.HashSet<>();
+        for (Player p : ents.getPlayers()) {
+            if (p.getId() == exceptId || !p.isValid() || !tracked(p) || ignoredOwn(p)) continue;
+            visible.add(p.getId());
+            double d = p.distanceTo(l);
+            if (d < r) return "saldiran " + Log.name(p) + " yakininda (" + (int) d + ")";
+        }
+        int map = mapIdNow();
+        for (java.util.Map.Entry<Integer, Location> e : trackSeen.entrySet()) {
+            int id = e.getKey();
+            if (id == exceptId || visible.contains(id) || !tracked(id)) continue;
+            if (trackOwn.getOrDefault(id, false) && config.ON_ENEMY.OWN_MODE == BotPlusConfig.OwnMode.IGNORE) continue;
+            long ago = now - trackSeenAt.getOrDefault(id, 0L);
+            if (ago > TRACK_HIDDEN_MS || trackSeenMap.getOrDefault(id, -2) != map) continue;
+            if (e.getValue().distanceTo(l) < r)
+                return "saldiran " + trackName.getOrDefault(id, "#" + id) + " son goruldugu yer (" + ago / 1000 + " sn once)";
+        }
+        return null;
     }
 
     /** Bu oyuncu son ms icinde bize ates etti mi. */
@@ -920,13 +1153,16 @@ public final class Context {
 
     /** Nokta tehlikeli bolgede mi (nedeni), degilse null. */
     public String inDangerZone(Locatable l) {
-        if (l == null || dangerZones.isEmpty()) return null;
+        if (l == null) return null;
         long now = now();
         int map = mapIdNow();
         for (Zone z : dangerZones)
             if (z.until > now && z.map == map && z.at.distanceTo(l) < z.r)
                 return z.why + " (" + (z.until - now) / 1000 + " sn)";
-        return null;
+        // Saldirani Takip: sabit bolge yerine saldiranin kendisi (gorunurken canli, gorunmezse 60 sn son yeri).
+        // "Devam Et" seciliyse saldirandan uzak durulmaz (dovus engellenmez).
+        if (config.ON_ENEMY.MODE == BotPlusConfig.OnEnemyMode.CONTINUE) return null;
+        return trackedZone(l, TRACK_AVOID_R, -1);
     }
 
     /** Oyuncunun son goruldugu yer (bize ates ederken), bilinmiyorsa null. */
@@ -1321,6 +1557,49 @@ public final class Context {
     public int workingMapId() {
         Integer id = value(workingMap, -1);
         return id;
+    }
+
+    /** Son EMP basilisi (Defense ya da kacis): EMP Donusu icin. */
+    public volatile long empUsedAt;
+    /** Yaklasinca Hiz Yetenegi: kacis hiz yetenegini tutuyor mu (Defense'in Gemi Yetenegi o ana kadar basilmaz). */
+    public volatile java.util.function.BooleanSupplier holdSpeed = () -> false;
+
+    /** Hiz yetenegi mi (Gemi Yetenegi secimi de olabilir: Pusat Speed Sap hizlandirir). */
+    public static boolean speedType(eu.darkbot.api.game.items.SelectableItem.Ability a) {
+        if (a == null) return false;
+        if (a == eu.darkbot.api.game.items.SelectableItem.Ability.PUSAT_PLUS_SPEED_SAP) return true;
+        for (eu.darkbot.api.game.items.SelectableItem.Ability s : SPEED) if (s == a) return true;
+        return false;
+    }
+
+    /**
+     * Yaklasinca Hiz Yetenegi: once Defense'teki Gemi Yetenegi (hiz turuyse), yoksa gemideki hiz yetenekleri;
+     * "Uzun Yolda Hiz Yetenegi" ayarindan bagimsiz. Basildiysa true.
+     */
+    public boolean useSpeedNow(String why) {
+        java.util.List<eu.darkbot.api.game.items.SelectableItem.Ability> list = new java.util.ArrayList<>();
+        try {
+            if (config.PROTECT.ENABLED && config.PROTECT.COUNTER != null
+                    && config.PROTECT.COUNTER.contains(BotPlusConfig.Counter.ABILITY) && speedType(config.PROTECT.ABILITY))
+                list.add(config.PROTECT.ABILITY);
+        } catch (RuntimeException ignored) {
+        }
+        java.util.Collections.addAll(list, SPEED);
+        for (eu.darkbot.api.game.items.SelectableItem.Ability a : list) {
+            try {
+                if (!items.getItem(a, eu.darkbot.api.game.items.ItemFlag.AVAILABLE).isPresent()) continue;
+                eu.darkbot.api.game.items.ItemUseResult r = items.useItem(a, eu.darkbot.api.game.items.ItemFlag.USABLE,
+                        eu.darkbot.api.game.items.ItemFlag.READY);
+                if (r != null && r.isSuccessful()) {
+                    Stats.count("hiz yetenegi");
+                    Log.i("HIZ", a + " kullanildi (" + why + ")");
+                    return true;
+                }
+                Log.every("speednow" + a, 10_000, "HIZ", a + " basilamadi: " + r + " (" + why + ")");
+            } catch (RuntimeException ignored) {
+            }
+        }
+        return false;
     }
 
     private static final eu.darkbot.api.game.items.SelectableItem.Ability[] SPEED = {

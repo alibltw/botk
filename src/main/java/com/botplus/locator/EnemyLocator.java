@@ -17,7 +17,16 @@ import eu.darkbot.api.extensions.Feature;
 
 /** BotPlus alt modulu: PET Dusman Bulucu (sinyale gitme, vurulan NPC, tur dondurme, bos harita, yenileme). */
 @Feature(name = "Enemy Locator", description = "BotPlus: PET düşman bulucu sinyaline gitme ve ilgili ayarlar.")
-public class EnemyLocator implements Configurable<EnemyLocator.Config> {
+public class EnemyLocator implements Configurable<EnemyLocator.Config>, eu.darkbot.api.extensions.Behavior {
+
+    /**
+     * Davranis olarak gorunur (DarkBot'un eklenti listesinde "B" isareti; hangi modul secili olursa olsun acik).
+     * Mantik BotPlus'in tikinde calisir; burada ayrica bir sey yapilmaz.
+     */
+    @Override
+    public void onTickBehavior() {
+    }
+
 
     public volatile Config config = new Config();
 
@@ -47,8 +56,9 @@ public class EnemyLocator implements Configurable<EnemyLocator.Config> {
     }
 
     public static class Go {
-        @Option("botplus.locator.go")
-        public boolean GO = false;
+        /** Bulucu sinyaline her zaman gidilir; bu acikken yolda kutu / baska NPC alinmaz, ates edilmez. */
+        @Option("botplus.locator.direct")
+        public boolean DIRECT = false;
 
         @Option("botplus.locator.drop")
         public boolean DROP = false;

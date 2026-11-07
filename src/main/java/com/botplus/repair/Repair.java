@@ -24,7 +24,16 @@ import java.util.Set;
  * (Genel -> Guvenlik -> Tamir) okunur, burada tekrar sorulmaz.
  */
 @Feature(name = "Repair", description = "BotPlus: haritada tamir ve boşta tamir (konfigürasyon ve can sınırları DarkBot ayarlarından).")
-public class Repair implements Configurable<Repair.Config> {
+public class Repair implements Configurable<Repair.Config>, eu.darkbot.api.extensions.Behavior {
+
+    /**
+     * Davranis olarak gorunur (DarkBot'un eklenti listesinde "B" isareti; hangi modul secili olursa olsun acik).
+     * Mantik BotPlus'in tikinde calisir; burada ayrica bir sey yapilmaz.
+     */
+    @Override
+    public void onTickBehavior() {
+    }
+
 
     public volatile Config config = new Config();
 

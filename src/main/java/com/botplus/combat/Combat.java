@@ -21,7 +21,16 @@ import java.util.Set;
 
 /** BotPlus alt modulu: dovus. Acik / kapali durumu DarkBot'un eklentiler sekmesinden; mantik BotPlus'ta. */
 @Feature(name = "Combat", description = "BotPlus: dövüş (saldırı tarzı, hedef seçimi, menzil, kaçan NPC).")
-public class Combat implements Configurable<Combat.Config> {
+public class Combat implements Configurable<Combat.Config>, eu.darkbot.api.extensions.Behavior {
+
+    /**
+     * Davranis olarak gorunur (DarkBot'un eklenti listesinde "B" isareti; hangi modul secili olursa olsun acik).
+     * Mantik BotPlus'in tikinde calisir; burada ayrica bir sey yapilmaz.
+     */
+    @Override
+    public void onTickBehavior() {
+    }
+
 
     public volatile Config config = new Config();
 
@@ -38,25 +47,41 @@ public class Combat implements Configurable<Combat.Config> {
 
         @Option("botplus.combat.style")
         @Dropdown
-        public BotPlusConfig.CombatStyle STYLE = BotPlusConfig.CombatStyle.ARC;
+        public BotPlusConfig.CombatStyle STYLE = BotPlusConfig.CombatStyle.ORBIT;
+
+        @Option("botplus.combat.first_hit")
+        @Dropdown
+        public BotPlusConfig.FirstHit FIRST_HIT = BotPlusConfig.FirstHit.NORMAL;
+
+        /** Kartal Dalisi bu canin altinda (ya da yaninda baska saldirgan NPC varken) yapilmaz, normal giris. */
+        @Option("botplus.combat.eagle_min_hp")
+        @Number(min = 0, max = 100, step = 5)
+        public int EAGLE_MIN_HP = 50;
 
         /** NPC'ye yaklasinca PET bu module gecer; "Degistirme": DarkBot'un PET ayari. */
         @Option("botplus.combat.pet")
         @Dropdown
         public BotPlusConfig.FightPet PET = BotPlusConfig.FightPet.NONE;
 
-        @Option("botplus.combat.arc_set")
-        public BotPlusConfig.ArcSettings ARC = new BotPlusConfig.ArcSettings();
+        @Option("botplus.combat.orbit")
+        public BotPlusConfig.OrbitSettings ORBIT = new BotPlusConfig.OrbitSettings();
 
-        @Option("botplus.combat.safe_set")
-        public BotPlusConfig.SafeSettings SAFE = new BotPlusConfig.SafeSettings();
+        @Option("botplus.combat.pendulum")
+        public BotPlusConfig.PendulumSettings PENDULUM = new BotPlusConfig.PendulumSettings();
 
-        @Option("botplus.combat.out_set")
-        public BotPlusConfig.OutrangeSettings OUT = new BotPlusConfig.OutrangeSettings();
+        @Option("botplus.combat.wave")
+        public BotPlusConfig.WaveSettings WAVE = new BotPlusConfig.WaveSettings();
+
+        @Option("botplus.combat.harbor")
+        public BotPlusConfig.HarborSettings HARBOR = new BotPlusConfig.HarborSettings();
+
+        @Option("botplus.combat.claw")
+        public BotPlusConfig.ClawSettings CLAW = new BotPlusConfig.ClawSettings();
 
         @Option("botplus.combat.options")
         @Dropdown(multi = true)
-        public Set<BotPlusConfig.CombatOption> OPTIONS = EnumSet.of(BotPlusConfig.CombatOption.PRE_LOCK);
+        public Set<BotPlusConfig.CombatOption> OPTIONS = EnumSet.of(BotPlusConfig.CombatOption.PRE_LOCK,
+                BotPlusConfig.CombatOption.OPENING_GUARD, BotPlusConfig.CombatOption.RICOCHET);
 
         @Option("botplus.combat.finish_first")
         public boolean FINISH_FIRST = true;
@@ -94,17 +119,9 @@ public class Combat implements Configurable<Combat.Config> {
         public boolean WEAK_FIRST = false;
     }
 
+    /** Menzil: sadece NPC listesindeki menzil kullanilir (ogrenme kaldirildi). */
     public static class Range {
-        @Option("botplus.plus.auto_range")
-        public boolean AUTO_RANGE = false;
-
-        @Option("botplus.plus.range_down")
-        public boolean RANGE_DOWN = true;
-
-        @Option("botplus.plus.no_learn_flee")
-        public boolean NO_LEARN_FLEE = true;
-
-        /** Isaretlenince BotPlus'in degistirdigi tum NPC menzilleri asil tablo degerlerine doner (sonra kendiliginden kapanir). */
+        /** Isaretlenince BotPlus'in eskiden degistirdigi tum NPC menzilleri asil tablo degerlerine doner (sonra kendiliginden kapanir). */
         @Option("botplus.plus.range_restore")
         public boolean RESTORE = false;
     }

@@ -353,6 +353,8 @@ public final class Locator {
     private static final int KILLER_DIST = 2000;
     private static final long KILLER_COOLDOWN_MS = 5000;
     private final java.util.Map<String, Long> killers = new java.util.HashMap<>();
+    /** Hatirlanan ad -> kendi sirketi mi (ayri hatirlama suresi). */
+    private final java.util.Map<String, Boolean> killerOwn = new java.util.HashMap<>();
     private java.time.Instant lastDeath;
     private long killerCooldown;
 
@@ -371,12 +373,14 @@ public final class Locator {
         Log.i("OLUM", "gemi patladi, olduren: " + (name == null || name.isEmpty() ? "bilinmiyor" : name)
                 + " | " + (Context.now() - t.toEpochMilli()) / 1000 + " sn once");
         context.deaths.report(name, t.toEpochMilli());
-        if (!context.config.PROTECT.KILLER.ENABLED || name == null || name.isEmpty()) return;
+        if (!context.config.PROTECT.KILLER.ENABLED || !context.config.REMEMBER_KILLERS || name == null || name.isEmpty()) return;
         if (isNpcName(name)) {
             Log.i("DUSMAN", name + " bir NPC, hatirlanmiyor (sadece oyuncular hatirlanir)");
             return;
         }
-        killers.put(name, Context.now() + context.config.PROTECT.KILLER.MINUTES * 60_000L);
+        killers.put(name, Context.now());
+        Boolean ko = context.ownFirmByName(name);
+        if (ko != null) killerOwn.put(name, ko); // bilinmiyorsa kaydedilmez (gorulunce yazilir)
         context.killers.add(name);
         eu.darkbot.api.game.other.Locatable at = null;
         try {
@@ -389,7 +393,9 @@ public final class Locator {
         } catch (RuntimeException ignored) {
         }
         context.killerAt(name, at, map);
-        Log.i("DUSMAN", name + " seni patlatti, " + context.config.PROTECT.KILLER.MINUTES + " dk hatirlanacak"
+        boolean kown = killerOwn.getOrDefault(name, false);
+        Log.i("DUSMAN", name + " seni patlatti, " + context.trackMs(kown) / 60_000 + " dk hatirlanacak"
+                + (kown ? " (kendi sirketi)" : ko == null ? " (sirketi henuz bilinmiyor)" : "")
                 + (at == null ? "" : ", olunen yer " + Log.loc(at) + " bolgesine gidilmeyecek"));
     }
 
@@ -470,9 +476,17 @@ public final class Locator {
         // ayari gecerli; hatirlama sonrasi yaklasinca uzaklasilir, yanindaki NPC secilmez).
         if (context.config.PROTECT.KILLER.ENABLED && context.config.REMEMBER_ATTACKERS) {
             for (String name : context.quietAttackers(Context.ESCAPE_MEMORY_MS, Context.THREAT_MEMORY_MS)) {
-                if (killers.containsKey(name)) continue;
-                killers.put(name, now + context.config.PROTECT.KILLER.MINUTES * 60_000L);
-                Log.i("DUSMAN", name + " sana saldirdi, " + context.config.PROTECT.KILLER.MINUTES + " dk hatirlanacak");
+                if (killers.containsKey(name)) {
+                    killers.put(name, now); // yeniden saldirdi: sure bastan baslar
+                    continue;
+                }
+                Boolean ko = context.ownFirmByName(name);
+                boolean own = ko != null && ko;
+                if (own && context.config.ON_ENEMY.OWN_MODE == BotPlusConfig.OwnMode.IGNORE) continue; // Yok Say
+                killers.put(name, now);
+                if (ko != null) killerOwn.put(name, ko); // bilinmiyorsa kaydedilmez
+                Log.i("DUSMAN", name + " sana saldirdi, " + context.trackMs(own) / 60_000 + " dk hatirlanacak"
+                        + (own ? " (kendi sirketi)" : ""));
             }
         }
         if (killers.isEmpty()) {
@@ -480,9 +494,17 @@ public final class Locator {
             context.trackKillers();
             return;
         }
+        // Sirketi henuz bilinmeyen hatirlanan gorulunce yazilir.
+        for (String k : killers.keySet())
+            if (!killerOwn.containsKey(k)) {
+                Boolean ko = context.ownFirmByName(k);
+                if (ko != null) killerOwn.put(k, ko);
+            }
+        // Sure her tik ayardan hesaplanir (dusman / kendi sirketi ayri; ayar degisince hemen gecerli).
         killers.entrySet().removeIf(e -> {
-            if (e.getValue() >= now) return false;
+            if (now - e.getValue() < context.trackMs(killerOwn.getOrDefault(e.getKey(), false))) return false;
             Log.i("DUSMAN", e.getKey() + " artik hatirlanmiyor (sure doldu)");
+            killerOwn.remove(e.getKey());
             return true;
         });
         context.killers.retainAll(killers.keySet());
@@ -575,9 +597,11 @@ public final class Locator {
         if (threat != null) return no("dusman " + Log.ship(threat) + " " + (int) threat.distanceTo(context.hero) + " uzakta saldiriyor / yaklasiyor");
         // Yakinda kutu ya da kesilecek NPC varken bulucuya gidilmez; DarkBot almazsa 10 sn sonra gidilir.
         // Once NPC: sinyal kutudan once gelir (kutu sinyali bekletmez); once kutu modunda yakindaki kutu beklenir.
-        eu.darkbot.api.game.entities.Box box = context.collecting() && boxBeforeLocator()
+        // Dusman Bulucuya Direkt Git: yakindaki kutu / NPC beklenmez, hemen sinyale gidilir.
+        boolean direct = context.config.LOCATOR.DIRECT;
+        eu.darkbot.api.game.entities.Box box = !direct && context.collecting() && boxBeforeLocator()
                 ? context.nearestBox(Math.max(1000, context.collectRadius())) : null;
-        Npc near = context.targetNpc() == null ? realNpcNear(Location.of(context.hero), 1500) : null;
+        Npc near = !direct && context.targetNpc() == null ? realNpcNear(Location.of(context.hero), 1500) : null;
         // Tam kontrolde: yakindaki NPC'yi dovus hemen alabiliyorsa beklenir, alamiyorsa beklenmez (10 sn bosa gidiyordu).
         if (near != null && context.config.COMBAT.ENABLED) {
             if (context.combatCanTake.test(near)) return no("yakinda kesilecek NPC var, dovus aliyor: " + Log.npc(near));
@@ -934,7 +958,8 @@ public final class Locator {
             BotPlusConfig.BoxWay way = context.config.BOX_WAY;
             double boxR = boxBeforeLocator() || way == BotPlusConfig.BoxWay.NEARBY ? context.collectRadius()
                     : way == BotPlusConfig.BoxWay.ON_ROUTE ? 800 : 0;
-            eu.darkbot.api.game.entities.Box box = context.collecting() && boxR > 0 ? context.nearestBox(Math.min(800, boxR)) : null;
+            boolean direct = context.config.LOCATOR.DIRECT; // Direkt Git: yolda kutu alinmaz
+            eu.darkbot.api.game.entities.Box box = !direct && context.collecting() && boxR > 0 ? context.nearestBox(Math.min(800, boxR)) : null;
             // Yoldakileri Al: sadece sinyale giden yolun 300 yakinindaki kutu (geri donulmez).
             if (box != null && way == BotPlusConfig.BoxWay.ON_ROUTE && !boxBeforeLocator()
                     && (box.distanceTo(loc) > context.hero.distanceTo(loc) || segDist(context.hero, loc, box) > 300)) box = null;
@@ -963,9 +988,10 @@ public final class Locator {
             if (n != null && context.config.COMBAT.ENABLED && !context.combatCanTake.test(n)) n = null;
             // Yoldaki NPC: sadece bulucunun aradigi turden daha oncelikliyse ona donulur; yoksa durulmaz, menzildeyse
             // gecerken ates edilir (bulucunun NPC'sine gitmek oncelikli).
-            if (n == null) n = betterOnWay(loc);
+            // Direkt Git: yoldaki baska NPC'ye donulmez, gecerken de ates edilmez (sadece sinyaldeki NPC).
+            if (n == null && !direct) n = betterOnWay(loc);
             if (n != null && context.config.COMBAT.ENABLED && !context.combatCanTake.test(n)) n = null;
-            if (n == null) shootPassing();
+            if (n == null && !direct) shootPassing();
             if (n != null) {
                 setFound(n.getId());
                 Log.i("BULUCU", "NPC bulundu: " + Log.npc(n) + " " + (int) context.hero.distanceTo(n) + " uzakta, "

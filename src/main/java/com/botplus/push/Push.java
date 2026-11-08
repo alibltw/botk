@@ -46,7 +46,8 @@ public class Push implements Configurable<Push.Config>, Behavior {
         @Number(min = 1, max = 72, step = 1)
         public int WINDOW_H = 24;
 
-        @Option("botplus.push.same_clan")
+        /** 2.7.0: PvP -> Kimlere Saldir -> "Klan Uyelerine Saldirma"ya tasindi (bir kez aktarilir). */
+        @Option.Ignore
         public boolean SAME_CLAN = true;
     }
 
@@ -59,7 +60,6 @@ public class Push implements Configurable<Push.Config>, Behavior {
             v.KILL_LIMIT = c.KILL_LIMIT;
             v.DEATH_LIMIT = c.DEATH_LIMIT;
             v.WINDOW_H = c.WINDOW_H;
-            v.SAME_CLAN = c.SAME_CLAN;
         }
         return v;
     }

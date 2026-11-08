@@ -90,8 +90,10 @@ public final class DefenseLogic {
 
         BotPlusConfig.HpLinkSet link = c.HP_LINK;
         // PET'i BotPlus yonetmiyorsa HP Link istenmez (istek PET'i degistiremez, bosuna sayilir).
-        if (link.ENABLED && context.config.PET.ENABLED && now >= context.hpLinkUntil && !context.hpLinkActive(now)) {
-            String why = reason("LINK", link.WHEN, link.HP, hp, damaged, enemy, npc);
+        if (link.ENABLED && context.config.PET.ENABLED && now >= context.hpLinkUntil && !context.hpLinkActive(now)
+                && now >= context.hpLinkBlockedUntil) {
+            // 2.7.0: hasar alinmiyorsa istenmez (oyun HP Link'i savas disinda calistirmiyor, PET bosta kaliyordu).
+            String why = damaged ? reason("LINK", link.WHEN, link.HP, hp, damaged, enemy, npc) : null;
             boolean ready;
             try {
                 ready = why != null && context.pet.isActive() && !context.pet.hasCooldown(PetGear.HP_LINK)
@@ -102,6 +104,7 @@ public final class DefenseLogic {
             if (ready) {
                 context.hpLinkUntil = now + HP_LINK_ASK_MS;
                 context.hpLinkUsedAt = 0;
+                markFirst("LINK", enemy);
                 Log.i("KORUMA", "PET HP Link istendi, " + why + ", can " + Log.pct(hp));
                 Stats.count("hp link");
             }

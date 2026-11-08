@@ -428,7 +428,7 @@ public final class CombatJob implements PlusModule.Job {
         // Arayuz (Swing) is parcaciginda cagrilir: "sirada" bilgisi tick'te hazirlanan metinden okunur (yan etki yok).
         String name = npcName.replace("(", "").replace(")", "").trim();
         String style = "Combat (" + styleName() + ")";
-        if (n == null) return name + " · " + phaseName() + "\n" + style + weapons(null);
+        if (n == null) return name + (phaseName().isEmpty() ? "" : " · " + phaseName()) + "\n" + style + weapons(null);
         int dist = (int) cp.context.hero.distanceTo(n);
         String line1;
         if (phase == CombatLogic.Phase.APPROACH) {
@@ -440,7 +440,8 @@ public final class CombatJob implements PlusModule.Job {
         }
         String next = nextInfo;
         if (!next.isEmpty()) line1 += " · sonra: " + next;
-        String line2 = style + " · " + phaseName() + (phase == CombatLogic.Phase.FIRST_HIT ? entryLabel() : "")
+        String ph = phaseName() + (phase == CombatLogic.Phase.FIRST_HIT ? entryLabel() : "");
+        String line2 = style + (ph.isEmpty() ? "" : " · " + ph)
                 + " · " + dist + " / menzil " + (int) curRadius
                 + (style() == BotPlusConfig.CombatStyle.RANGE_LOCK && !lockInfo.isEmpty() ? " · " + lockInfo : "") + learnInfo;
         return line1 + "\n" + line2 + weapons(n);
@@ -566,11 +567,21 @@ public final class CombatJob implements PlusModule.Job {
         return false;
     }
 
+    private boolean arcStyle() {
+        BotPlusConfig.CombatStyle st = style();
+        return st == BotPlusConfig.CombatStyle.ORBIT || st == BotPlusConfig.CombatStyle.PENDULUM
+                || st == BotPlusConfig.CombatStyle.WAVE || st == BotPlusConfig.CombatStyle.CRESCENT;
+    }
+
     String phaseName() {
         switch (phase) {
             case APPROACH: return "yaklaşılıyor";
             case FIRST_HIT: return "ilk vuruş";
-            case ARC: return slipping ? "çoklu saldırıdan sıyrılıyor" : inward ? "yay (içeri)" : "yay";
+            case ARC:
+                if (slipping) return "çoklu saldırıdan sıyrılıyor";
+                // 2.7.0: "yay" sadece yay ceken tarzlarda (Akilli Konum / Menzil Kilidi / Liman ... "yay" yazmaz).
+                if (!arcStyle()) return "";
+                return inward ? "yay (içeri)" : "yay";
             case HOLD: return "sabit (dönme yok)";
             default: return "kutu toplanıyor";
         }
@@ -1131,7 +1142,9 @@ public final class CombatJob implements PlusModule.Job {
             cp.context.hero.triggerLaserAttack();
             act = "ates var gorunuyor ama hasar yok, lazer kapatilip acildi";
         } else act = "ates var gorunuyor ama hasar yok, bekleniyor";
-        Log.i("COMBAT", Log.npc(n) + " menzilde ama ates yok (" + (now - lastDropAt) + " ms hasar yok, uzaklik " + (int) d
+        // 2.7.0: uzaklik menzilden buyukse "menzil disi" yazilir (eskiden her durumda "menzilde" yaziyordu).
+        boolean outR = d > radius || now - cp.context.lastOutOfRangeAt < 1500;
+        Log.i("COMBAT", Log.npc(n) + (outR ? " menzil disi, hasar yok (" : " menzilde ama ates yok (") + (now - lastDropAt) + " ms hasar yok, uzaklik " + (int) d
                 + " / " + (int) radius + ", ping " + ping + "): " + act + " (" + wdTries + ". deneme)");
     }
 
@@ -1728,6 +1741,7 @@ public final class CombatJob implements PlusModule.Job {
     /** Tutma suresi dolup birakilan NPC'ler: bu zamana kadar yeniden pencelenmez (birak-al dongusu olmasin). */
     final java.util.Map<Integer, Long> clawReleased = new java.util.HashMap<>();
     int clawTarget = -1;
+    static final long CLAW_FAIL_MS = 10_000;
     long clawStart;
     double clawStartTotal;
     /** Bayrak icin tek atis en fazla bu kadar surer. */
@@ -1782,7 +1796,10 @@ public final class CombatJob implements PlusModule.Job {
                 } else {
                     clawHit.remove(clawTarget);
                     clawSince.remove(clawTarget);
-                    Log.i("PENCE", "#" + clawTarget + " bayrak alinamadi (" + (o == null ? "gorunmuyor" : "isabet yok") + "), birakildi");
+                    // 2.7.0: alinamayan NPC 10 sn denenmez (eskiden hemen yeniden denenip asil saldiri kesiliyordu).
+                    clawReleased.put(clawTarget, now + CLAW_FAIL_MS);
+                    Log.i("PENCE", "#" + clawTarget + " bayrak alinamadi (" + (o == null ? "gorunmuyor" : "isabet yok")
+                            + "), birakildi, " + CLAW_FAIL_MS / 1000 + " sn denenmeyecek");
                 }
                 clawTarget = -1;
                 cp.context.attack.setTarget(n);
@@ -1790,8 +1807,7 @@ public final class CombatJob implements PlusModule.Job {
             }
             if (!Objects.equals(cp.context.attack.getTarget(), o)) cp.context.attack.setTarget(o);
             cp.context.attack.tryLockAndAttack();
-            double or = o.getInfo().getRadius();
-            return Location.of(Location.of(o.getX(), o.getY()), Location.of(o.getX(), o.getY()).angleTo(cp.context.hero), Math.max(150, or - 40));
+            return clawSpot(o, n);
         }
         // Tutma suresi dolan / kaybolan bayraklar birakilir
         long hold = (long) BotPlusConfig.ClawSettings.FLAG_SEC * BotPlusConfig.ClawSettings.HOLD_MULT * 1000L;
@@ -1813,7 +1829,7 @@ public final class CombatJob implements PlusModule.Job {
         // Yenileme zamani gelen bayrak
         long renewAt = Math.max(1000, (BotPlusConfig.ClawSettings.FLAG_SEC - BotPlusConfig.ClawSettings.RENEW_SEC) * 1000L);
         for (java.util.Map.Entry<Integer, Long> e : clawHit.entrySet()) {
-            if (now - e.getValue() >= renewAt) return startClaw(cp.context.findNpc(e.getKey()), now);
+            if (now - e.getValue() >= renewAt) return startClaw(cp.context.findNpc(e.getKey()), now, n);
         }
         // Yeni bayrak: ayni turden, secilebilir, baskasinin olmayan, yakin zamanda birakilmamis NPC
         clawReleased.values().removeIf(t -> t < now);
@@ -1822,19 +1838,23 @@ public final class CombatJob implements PlusModule.Job {
             double bd = c.RANGE;
             for (Npc o : cp.context.ents.getNpcs()) {
                 if (o.getId() == npcId || clawHit.containsKey(o.getId()) || clawReleased.containsKey(o.getId()) || !o.isValid() || Context.isFake(o)) continue;
-                if (o.getInfo() == null || !npcName.equals(o.getInfo().getName()) || !cp.selectable(o) || !o.isOwned()) continue;
+                if (o.getInfo() == null || !npcName.equals(o.getInfo().getName()) || !cp.selectable(o)) continue;
+                // 2.7.0: baskasinin kilitli / vurdugu NPC atlanir (eskiden "isOwned" sadece bizim kilidimizde dogruydu:
+                // kosul ters calisiyordu). Asil hedefin menzilinden cikmadan vurulabilecek kadar yakin olmali.
+                if (o.getLockType() == eu.darkbot.api.game.other.Lockable.Lock.NOT_OWNED || cp.context.attackedByOthers(o)) continue;
+                if (o.distanceTo(n) > n.getInfo().getRadius() + o.getInfo().getRadius() - 150) continue;
                 double dd = o.distanceTo(cp.context.hero);
                 if (dd < bd) {
                     bd = dd;
                     best = o;
                 }
             }
-            if (best != null) return startClaw(best, now);
+            if (best != null) return startClaw(best, now, n);
         }
         return null;
     }
 
-    Location startClaw(Npc o, long now) {
+    Location startClaw(Npc o, long now, Npc main) {
         if (o == null) return null;
         clawTarget = o.getId();
         clawStart = now;
@@ -1842,8 +1862,20 @@ public final class CombatJob implements PlusModule.Job {
         cp.context.attack.setTarget(o);
         cp.context.attack.tryLockAndAttack();
         Log.d("PENCE", Log.npc(o) + " icin bayrak atisi");
-        return Location.of(Location.of(o.getX(), o.getY()), Location.of(o.getX(), o.getY()).angleTo(cp.context.hero),
-                Math.max(150, o.getInfo().getRadius() - 40));
+        return clawSpot(o, main);
+    }
+
+    /**
+     * Bayrak atisi noktasi: bayrak NPC'sinin menzilinde, asil hedefe dogru (asil hedefin menzilinden cikilmaz;
+     * eskiden gemiye dogru nokta seciliyordu, gemi asil NPC'den uzaklasiyordu).
+     */
+    private Location clawSpot(Npc o, Npc main) {
+        Location ol = Location.of(o.getX(), o.getY());
+        double or = Math.max(150, o.getInfo().getRadius() - 40);
+        if (main == null || !main.isValid()) return Location.of(ol, ol.angleTo(cp.context.hero), or);
+        Location ml = Location.of(main.getX(), main.getY());
+        double gap = ol.distanceTo(ml);
+        return Location.of(ol, ol.angleTo(ml), Math.min(or, Math.max(0, gap - 100)));
     }
 
     /** Hedef olunce: bayragi tutulan NPC'lerden "Kesim Sirasi"na gore siradaki (yoksa null). */
@@ -2530,7 +2562,9 @@ public final class CombatJob implements PlusModule.Job {
         lastStepAt = now;
         // Vuramazsa Menzili Kis: NPC hemen yok sayilmaz; saldiri mesafesi %10'luk adimlarla ayardaki en alt orana
         // kadar kisilip denenir (sadece bu hedef), ancak en altta da vurulamazsa yok sayilir.
-        double minScale = Math.max(0.3, Math.min(0.95, cp.context.config.COMBAT.NO_HIT_MIN / 100.0));
+        // 2.7.0: Menzil listesinde "Vuramazsa menzili kis" kapaliysa (100) hic kisilmaz, dogrudan yok sayilir.
+        int noHit = cp.context.config.COMBAT.NO_HIT_MIN;
+        double minScale = noHit >= 100 ? 1.0 : Math.max(0.3, Math.min(0.95, noHit / 100.0));
         if (hitScale > minScale + 0.001) {
             hitScale = Math.max(minScale, hitScale - 0.1);
             Log.i("COMBAT", Log.npc(n) + " " + (now - lastDamageAt) / 1000 + " sn hasar almadi (ates bekcisi " + wdTries
@@ -3279,7 +3313,8 @@ public final class CombatJob implements PlusModule.Job {
         // Araya alinan NPC'de kesilirse asil hedef (halfId) korunur, uzerine yazilmaz.
         boolean keepMain = cp.halfId >= 0 && npcId == weakPick;
         // Gemi patladiysa NPC hatirlanmaz (canlaninca dogrudan olunen yere, patlatanin yanina gidiliyordu).
-        boolean died = why != null && why.contains("patladi");
+        // Captcha'dan sonra da hatirlanmaz: captcha modulu kontrolu geri verince kaldigi yerden surulmez (2.7.0).
+        boolean died = why != null && (why.contains("patladi") || why.contains("captcha"));
         if (died) cp.halfId = -1; // dusman saldirisinda once kaydedilmis olabilir: olunen yere donulmez
         if (n != null && !keepMain && !died && !"bitti".equals(why) && Context.killable(n) && Context.hp(n) < 0.95) {
             cp.halfId = npcId;

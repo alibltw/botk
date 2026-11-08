@@ -149,6 +149,9 @@ public class PlusSafety extends SafetyFinder {
     public void jumpRefusedCombat() {
         jumpRefused(60_000, false);
         refusedCombat = true;
+        int m = mapId();
+        if (m != -1 && combatMaps.add(m)) Log.i("GUVENLIK", "bu haritada savas sirasinda atlanamiyor (harita " + m
+                + "): Takip Edilirse Atla'da portalda beklenmeyecek");
     }
 
     @Override
@@ -229,19 +232,19 @@ public class PlusSafety extends SafetyFinder {
             return false;
         }
         hero.setRunMode();
-        eu.darkbot.api.game.entities.Npc shooter = shooter();
+        Ship shooter = shooter();
         boolean refused = refusedAt > 0 && now - refusedAt < 5000;
         if (refused && refusedCombat && shooter != null && passRetreatUntil < now) {
             passRetreatUntil = now + RETREAT_MAX_MS;
             refusedAt = 0;
-            Log.i("GUVENLIK", "Gecerken Atla: oyun savas yuzunden reddetti, " + Log.npc(shooter) + " ates ediyor: menzilinden cikiliyor, hasar kesilince portala donulecek");
+            Log.i("GUVENLIK", "Gecerken Atla: oyun savas yuzunden reddetti, " + Log.name(shooter) + " ates ediyor: menzilinden cikiliyor, hasar kesilince portala donulecek");
         }
         if (passRetreatUntil > now) {
             if (shooter == null && !hero.getHealth().hpDecreasedIn(2500)) {
                 passRetreatUntil = 0;
                 Log.i("GUVENLIK", "Gecerken Atla: ates kesildi, portala donuluyor");
             } else {
-                eu.darkbot.api.game.entities.Npc from = shooter;
+                Ship from = shooter;
                 if (from != null) {
                     // NPC'nin gemi tarafinda, gemiden daha uzak nokta (NPC'ye dogru gidilmez).
                     double r = Math.max(RETREAT_R, hero.distanceTo(from) + 500);
@@ -288,9 +291,9 @@ public class PlusSafety extends SafetyFinder {
         return null;
     }
 
-    /** Gemiye ates eden en yakin NPC (SHOOTER_DIST icinde), yoksa null. */
-    private eu.darkbot.api.game.entities.Npc shooter() {
-        eu.darkbot.api.game.entities.Npc best = null;
+    /** Gemiye ates eden en yakin NPC ya da oyuncu (SHOOTER_DIST icinde; 2.7.0'dan once sadece NPC), yoksa null. */
+    private Ship shooter() {
+        Ship best = null;
         double bd = SHOOTER_DIST;
         for (eu.darkbot.api.game.entities.Npc n : npcs) {
             if (!n.isValid() || !n.isAttacking(hero)) continue;
@@ -300,7 +303,28 @@ public class PlusSafety extends SafetyFinder {
                 best = n;
             }
         }
+        for (Ship sh : ships) {
+            if (!sh.isValid() || sh.getId() == hero.getId() || !sh.isAttacking(hero)) continue;
+            double d = hero.distanceTo(sh);
+            if (d < bd) {
+                bd = d;
+                best = sh;
+            }
+        }
         return best;
+    }
+
+    /** "Savas esnasinda atlanamaz" goruldugu haritalar: Takip Edilirse Atla'da portalda beklenmez. */
+    private final java.util.Set<Integer> combatMaps = new java.util.HashSet<>();
+
+    /** Bu haritada savas sirasinda portaldan atlanamadigi goruldu mu. */
+    public boolean combatMap() {
+        return combatMaps.contains(mapId());
+    }
+
+    private int mapId() {
+        GameMap m = starSystem.getCurrentMap();
+        return m == null ? -1 : m.getId();
     }
 
     private void passReset() {
@@ -377,6 +401,8 @@ public class PlusSafety extends SafetyFinder {
     protected Escaping getEscape() {
         Escaping e = super.getEscape();
         if (e != Escaping.ENEMY || !charge() || !plusCfg().FOLLOW_JUMP) return e;
+        // 2.7.0: savasta atlanamayan haritada portalda beklemek anlamsiz (dusman gelince atlanamaz): normal kacis.
+        if (combatMaps.contains(mapId())) return e;
         if (jumpState != JumpState.CURRENT_MAP || safety == null || safety.getType() != SafetyInfo.Type.PORTAL) return e;
         if (hero.getLocationInfo().distanceTo(safety) > safety.getRadius()) return e;
         boolean f;

@@ -68,7 +68,7 @@ import java.util.Set;
 public class BotPlus implements Module, Behavior, Configurable<CoreConfig>, NpcFlags<BotPlusFlag>, GearSelector,
         LaserSelector, ShipModeSelector, Drawable, Listener, Installable {
 
-    public static final String VERSION = "2.6.0";
+    public static final String VERSION = "2.7.0";
     private static final int COMBAT_PET_DIST = 1500;
     private static final long BOX_WAIT_MS = 1200;
     private static final long BOX_COLLECT_MS = 6000;
@@ -103,6 +103,7 @@ public class BotPlus implements Module, Behavior, Configurable<CoreConfig>, NpcF
     private boolean wasActive;
     private String lastModule = "";
     private long captchaUntil;
+    private boolean captchaModOn, captchaSeen;
     private int outOfRange;
     /** BotPlus'in baslattigi son gecici modul (araya giren modulu yakalamak icin). */
     private PlusModule current;
@@ -522,8 +523,13 @@ public class BotPlus implements Module, Behavior, Configurable<CoreConfig>, NpcF
         if (low.contains("şeref puan") || low.contains("seref puan") || low.contains("honor")) context.honorMsgAt = Context.now();
         if (low.contains("kara kutu") || low.contains("üpheli davran") || low.contains("suspicious")
                 || low.contains("black box") || low.contains("captcha")) {
-            captchaUntil = Context.now() + CAPTCHA_PAUSE_MS;
-            Log.i("CAPTCHA", "oyun captcha istiyor: \"" + msg + "\", BotPlus " + CAPTCHA_PAUSE_MS / 1000 + " sn hicbir sey yapmayacak");
+            // 2.7.0: mesajda sure varsa (ornegin "10 saniye") o kadar + 2 sn, yoksa en fazla 45 sn. Captcha modulu
+            // devralip geri verince bekleme hemen biter (captcha()).
+            java.util.regex.Matcher cm = java.util.regex.Pattern.compile("(\\d+)\\s*(sn|saniye|sec|second)").matcher(low);
+            long ms = cm.find() ? Math.min(CAPTCHA_PAUSE_MS, (Long.parseLong(cm.group(1)) + 2) * 1000L) : CAPTCHA_PAUSE_MS;
+            captchaUntil = Context.now() + ms;
+            captchaSeen = true;
+            Log.i("CAPTCHA", "oyun captcha istiyor: \"" + msg + "\", BotPlus en fazla " + ms / 1000 + " sn bekleyecek");
         }
         // Portal atlamayi reddetti: kacis baska portala gecer (Portaldan Atlayamazsa Baska Portala). "Yakininda
         // degilsin" reddi sayilmaz (portala varmadan basildi). Oyuna girdikten sonraki bekleme tum portallari kapatir.
@@ -558,10 +564,33 @@ public class BotPlus implements Module, Behavior, Configurable<CoreConfig>, NpcF
         Module m = context.bot.getModule();
         if (m != null && m.getClass().getSimpleName().toLowerCase(Locale.ROOT).contains("captcha")) {
             Log.change("captchamod", "on", "CAPTCHA", "captcha modulu calisiyor (" + m.getClass().getSimpleName() + "), BotPlus bekliyor");
+            captchaModOn = true;
+            captchaSeen = true;
             return true;
         }
         Log.forget("captchamod");
-        return Context.now() < captchaUntil;
+        if (captchaModOn) {
+            // Captcha modulu kontrolu geri verdi: kalan bekleme gereksiz, yarim is / NPC unutulur, bastan baslanir.
+            captchaModOn = false;
+            captchaUntil = 0;
+        }
+        if (Context.now() < captchaUntil) return true;
+        if (captchaSeen) {
+            captchaSeen = false;
+            afterCaptcha();
+        }
+        return false;
+    }
+
+    /** Captcha bitti: is kaldigi yerden surulmez (yarim NPC, hedef, dolasma, kutu sifirlanir). */
+    private void afterCaptcha() {
+        endJob("captcha bitti");
+        combat.forget();
+        targeting.reset();
+        roam.reset();
+        boxes.reset();
+        context.releaseAttack();
+        Log.i("CAPTCHA", "captcha bitti: BotPlus bastan basliyor (yarim kalan NPC / is unutuldu)");
     }
 
     // ---------------------------------------------------------------- ana dongu
@@ -792,6 +821,12 @@ public class BotPlus implements Module, Behavior, Configurable<CoreConfig>, NpcF
             context.deaths.sample("gecici modul: " + (tm == null ? "-" : tm.getClass().getSimpleName()));
             // Captcha / baglanti kesme modulunde EMP, Insta-Shield ve RSB'ye basilmaz (cikis / captcha bozulmasin).
             String tn = tm == null ? "" : tm.getClass().getSimpleName().toLowerCase(Locale.ROOT);
+            if (tn.contains("captcha")) {
+                // Captcha modulu devraldi: geri verince BotPlus beklemeden, bastan baslar (captcha()).
+                if (!captchaModOn) Log.i("CAPTCHA", "captcha modulu devraldi (" + tm.getClass().getSimpleName() + ")");
+                captchaModOn = true;
+                captchaSeen = true;
+            }
             if (tn.contains("captcha") || tn.contains("disconnect")) return;
             protect.tick(alive);
             if (alive) context.unlock.tick(false);
@@ -1350,6 +1385,9 @@ public class BotPlus implements Module, Behavior, Configurable<CoreConfig>, NpcF
     private long refuseSince;
     private static final long COMBO_SWITCH_MS = 2500, COMBO_GIVE_UP_MS = 10_000;
 
+    private long linkSelSince;
+    private static final long HP_LINK_FIRE_MS = 3000;
+
     private void watchRefusal(PetGear want) {
         long now = Context.now();
         PetGear cur = currentGear();
@@ -1363,6 +1401,25 @@ public class BotPlus implements Module, Behavior, Configurable<CoreConfig>, NpcF
         boolean forcedPassive = cur == PetGear.PASSIVE && ht instanceof eu.darkbot.api.game.entities.Player
                 && ((eu.darkbot.api.game.entities.Player) ht).getEntityInfo() != null
                 && !((eu.darkbot.api.game.entities.Player) ht).getEntityInfo().isEnemy();
+        // 2.7.0 HP Link: PET HP Link'e gecti ama bekleme suresi baslamadiysa (yetenek calismadi) basarisiz sayilir;
+        // eskiden "secildi" diye istek 6 sn surup PET HP Link'te bosta kaliyordu, ates edilmiyordu.
+        if (want == PetGear.HP_LINK && cur == PetGear.HP_LINK && !cooldown(want) && !context.hpLinkActive(now)) {
+            if (linkSelSince == 0) linkSelSince = now;
+            else if (now - linkSelSince > HP_LINK_FIRE_MS + 2L * ping()) {
+                int fails = refusedFails.getOrDefault(want, 0);
+                long wait = Math.min(60_000, COMBO_GIVE_UP_MS << Math.min(fails, 3));
+                refusedFails.put(want, fails + 1);
+                refusedUntil.put(want, now + wait);
+                context.hpLinkUntil = 0;
+                context.hpLinkBlockedUntil = now + wait;
+                long took = now - linkSelSince;
+                linkSelSince = 0;
+                Log.i("PET", "HP Link secildi ama " + took / 1000.0 + " sn'de kullanilmadi (bekleme baslamadi, "
+                        + (context.outOfCombat(1000) ? "savas yok" : context.combatWhy()) + "): " + wait / 1000 + " sn vazgecildi");
+            }
+            return;
+        }
+        linkSelSince = 0;
         if (want == null || cur == null || want == cur || cooldown(want) || forcedPassive
                 || (want == PetGear.COMBO_REPAIR && comboActive)) {
             refuseWant = null;

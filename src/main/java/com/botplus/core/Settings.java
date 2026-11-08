@@ -26,6 +26,10 @@ public final class Settings {
     private static final BotPlusConfig.HpLinkSet OFF_LINK = new BotPlusConfig.HpLinkSet();
     /** Dusmani Hatirla gorunumu (CoreConfig'ten kurulur). */
     private final BotPlusConfig.Killer VIEW_KILLER = new BotPlusConfig.Killer();
+    /** 2.7.0: Dusman Saldirinca gelismis ayarlarinin gorunumu (menude listeler; sabitler burada). */
+    private final CoreConfig.EscapePlusSet VIEW_PLUS = new CoreConfig.EscapePlusSet();
+    /** PvP Plus'in ayari (Aktif tiki kapali olsa da): Klan Uyelerine Saldirma her yerde gecerli. */
+    private com.botplus.pvp.Pvp.Config pvpRaw;
 
     private final Context context;
     private final ExtensionsAPI ext;
@@ -84,12 +88,14 @@ public final class Settings {
             c.MIGRATED = true;
             Context.saveConfig();
         }
+        c.migrate27IfNeeded();
     }
 
     /** CoreConfig'in kendi (yeni menu) alanlari: eski ayar karsilastirmasinda ve ayar dokumunde kullanilir. */
-    private static final String[] CORE_KEYS = {"GENEL", "HAREKET", "DOLASMA", "KUTU", "DUSMAN", "HP_BEKLE", "PET_AYAR", "YENILEME", "KAYIT"};
+    private static final String[] CORE_KEYS = {"GENEL", "HAREKET_SET", "KUTU_SET", "DUSMAN", "PET_AYAR", "KAYIT"};
     private static final java.util.Set<String> CORE_ONLY = new java.util.HashSet<>(java.util.Arrays.asList(
             "GENEL", "HAREKET", "DOLASMA", "KUTU", "DUSMAN", "HP_BEKLE", "PET_AYAR", "YENILEME", "KAYIT",
+            "HAREKET_SET", "KUTU_SET", "MIGRATED_27",
             "MIGRATED", "MIGRATED_SUBS", "MIGRATED_ENABLED", "ASIL_MENZIL", "YAZILAN_MENZIL"));
 
     /**
@@ -167,7 +173,9 @@ public final class Settings {
         pvp = sub(com.botplus.pvp.Pvp.class);
         push = sub(com.botplus.push.Push.class);
         migrateSubs();
+        migrateSubs27();
         restoreRanges();
+        pvpRaw = pvp == null ? null : pvp.config;
         // Bot baslatilinca (ilk tik ya da bot durdurulup yeniden baslatilinca) tum ayarlar loga dokulur (test icin).
         // Eskiden her 5 sn'lik aralikta (gecici modul, takilma) tekrar dokuluyordu.
         long nowR = Context.now();
@@ -181,31 +189,71 @@ public final class Settings {
         if (pvp != null && !pvp.config.ENABLED) pvp = null;
         if (push != null && !push.config.ENABLED) push = null;
         build(context.config);
+        try {
+            context.abilitiesTick();
+        } catch (RuntimeException ignored) {
+        }
     }
 
-    /** Combat -> Menzil -> "Asil Menzillere Don" isaretlendiyse menziller geri yuklenir, isaret kaldirilir. */
+    /**
+     * 2.7.0: "Asil Menzillere Don" kaldirildi; yeni surumun ilk acilisinda menziller bir kez kendiliginden asil
+     * degerlerine dondurulur (Combat acikken).
+     */
     private void restoreRanges() {
-        if (combat == null || combat.config.RANGE == null || !combat.config.RANGE.RESTORE) return;
-        combat.config.RANGE.RESTORE = false;
+        if (combat == null || core.MIGRATED_SUBS.contains(RESTORE_27)) return;
         int n = 0;
         try {
             eu.darkbot.api.config.ConfigSetting<java.util.Map<String, ?>> infos = context.api
                     .requireAPI(eu.darkbot.api.managers.ConfigAPI.class).requireConfig("loot.npc_infos");
             java.util.Map<String, ?> m = infos.getValue();
-            if (m != null) n = Targeting.restoreAll(name -> {
+            if (m == null) return; // NPC listesi henuz okunamadi: sonra yeniden denenir
+            n = Targeting.restoreAll(name -> {
                 Object o = m.get(name);
                 return o instanceof eu.darkbot.api.config.types.NpcInfo ? (eu.darkbot.api.config.types.NpcInfo) o : null;
             });
         } catch (Throwable t) {
-            Log.i("MENZIL", "asil menziller geri yuklenemedi: " + t);
+            Log.every("restore27", 60_000, "MENZIL", "asil menziller geri yuklenemedi: " + t);
+            return;
         }
-        Log.i("MENZIL", "Asil Menzillere Don: " + n + " NPC'nin menzili asil degerine dondu (kayitli " + core.ASIL_MENZIL.size() + ")");
+        core.MIGRATED_SUBS.add(RESTORE_27);
+        Log.i("MENZIL", "2.7.0 ilk acilis: " + n + " NPC'nin menzili asil degerine dondu (kayitli " + core.ASIL_MENZIL.size() + ")");
         Context.saveConfig();
+    }
+
+    /** 2.7.0 alt modul menu sadelestirmesi: her alt modul kendi bayragiyla bir kez (Aktif tiki kapali olsa da). */
+    private void migrateSubs27() {
+        boolean ch = false;
+        CoreConfig.OnEnemySet ds = core.DUSMAN;
+        if (combat != null && combat.config.migrate27()) ch = true;
+        if (defense != null) {
+            boolean emp = ds.ATLAT != null && ds.ATLAT.EMP;
+            boolean late = ds.ATLAT != null && ds.ATLAT.SECENEK != null && ds.ATLAT.SECENEK.contains(BotPlusConfig.OutrunOpt.LATE_SPEED);
+            if (defense.config.migrate27(emp, late)) ch = true;
+        }
+        if (pvp != null) {
+            boolean same = push == null || push.config == null || push.config.SAME_CLAN;
+            if (pvp.config.migrate27(same)) ch = true;
+        }
+        if (repair != null && !repair.config.MIGRATED_27) {
+            Repair.Config r = repair.config;
+            if (r.CAN_BEKLE == null) r.CAN_BEKLE = new Repair.HpWait();
+            CoreConfig.HpWaitSet hb = core.HP_BEKLE;
+            if (hb != null && hb.ENABLED) {
+                r.CAN_BEKLE.HP = Math.max(1, hb.HP);
+                if (hb.WHICH != null) r.CAN_BEKLE.WHICH = hb.WHICH;
+                if (hb.MODE != null) r.CAN_BEKLE.MODE = hb.MODE;
+            } else r.CAN_BEKLE.HP = 0;
+            r.MIGRATED_27 = true;
+            Log.i("AYARLAR", "2.7.0: HP Bekle -> Tamir -> Can Bekle (%" + r.CAN_BEKLE.HP + ")");
+            ch = true;
+        }
+        if (ch) Context.saveConfig();
     }
 
     private long lastRefreshAt;
     private static final long REFRESH_MS = 1000;
     private static final String PET_TO_COMBAT = "pet->combat";
+    private static final String RESTORE_27 = "restore-ranges-27";
     /** 2.1.0: Defense -> "Oyuncu Saldirinca" BotPlus menusundeki "Dusman Saldirinca" ayarina tasindi. */
     private static final String ONPLAYER_TO_CORE = "onplayer->core";
     private static final String REMEMBER_TO_MULTI = "remember->multi";
@@ -266,25 +314,30 @@ public final class Settings {
         v.WORK = c.GENEL.WORK;
         v.SORT = c.GENEL.SORT.sort;
 
-        v.AVOID_UNLISTED = c.HAREKET.AVOID_UNLISTED;
-        v.AVOID_NEAR_OFF = c.HAREKET.AVOID_NEAR_OFF;
-        v.AVOID_AHEAD = c.HAREKET.AVOID_AHEAD;
-        v.AVOID_ANGLE = c.HAREKET.AVOID_ANGLE;
-        v.AVOID_ONLY_AGGRESSIVE = c.HAREKET.AVOID_ONLY_AGGRESSIVE;
-        v.PASS_PASSIVE = c.HAREKET.PASS_PASSIVE;
-        v.BOX_MAX_DIST = c.KUTU.MAX_DIST;
-        v.BOX_WAY = c.KUTU.WAY;
+        // 2.7.0 Hareket listesi; Ileri Bakis 1500, Dolanma Acisi 45, PET Radar 3000 sabit, "Sadece Saldirgan" kaldirildi.
+        java.util.Set<BotPlusConfig.MoveOpt> mv = c.HAREKET_SET;
+        v.AVOID_UNLISTED = mv.contains(BotPlusConfig.MoveOpt.AVOID_UNLISTED);
+        v.AVOID_NEAR_OFF = mv.contains(BotPlusConfig.MoveOpt.AVOID_NEAR_OFF);
+        v.AVOID_AHEAD = 1500;
+        v.AVOID_ANGLE = 45;
+        v.AVOID_ONLY_AGGRESSIVE = false;
+        v.PASS_PASSIVE = mv.contains(BotPlusConfig.MoveOpt.PASS_PASSIVE);
+        // 2.7.0 Kutu listesi: "Uzaktaki Kutulari Yok Say" 3000, kapaliysa sinir yok.
+        java.util.Set<BotPlusConfig.BoxOpt> bx = c.KUTU_SET;
+        v.BOX_MAX_DIST = bx.contains(BotPlusConfig.BoxOpt.FAR_IGNORE) ? CoreConfig.BOX_FAR : 100_000;
+        v.BOX_WAY = bx.contains(BotPlusConfig.BoxOpt.WAY_NEAR) ? BotPlusConfig.BoxWay.NEARBY
+                : bx.contains(BotPlusConfig.BoxOpt.WAY_ROUTE) ? BotPlusConfig.BoxWay.ON_ROUTE : BotPlusConfig.BoxWay.IGNORE;
 
         // Plus ozellikleri: ana anahtar her zaman acik, tek tek ayarlar menulerden.
         v.PLUS.ENABLED = true;
         BotPlusConfig.PlusOther o = v.PLUS.OTHER;
-        o.BOX_WAIT = c.KUTU.WAIT;
-        o.RIVAL = c.KUTU.RIVAL;
-        o.SHORT_ROAM = c.DOLASMA.SHORT;
-        o.SMART_ROAM = c.DOLASMA.SMART;
-        o.RADAR = c.DOLASMA.RADAR;
-        o.SPEED_ABILITY = c.HAREKET.SPEED_ABILITY;
-        o.UNSTUCK = c.HAREKET.UNSTUCK;
+        o.BOX_WAIT = bx.contains(BotPlusConfig.BoxOpt.WAIT);
+        o.RIVAL = bx.contains(BotPlusConfig.BoxOpt.RIVAL);
+        o.SHORT_ROAM = mv.contains(BotPlusConfig.MoveOpt.SHORT_ROAM);
+        o.SMART_ROAM = mv.contains(BotPlusConfig.MoveOpt.SMART_ROAM);
+        o.RADAR = 3000;
+        o.SPEED_ABILITY = mv.contains(BotPlusConfig.MoveOpt.SPEED_ABILITY);
+        o.UNSTUCK = mv.contains(BotPlusConfig.MoveOpt.UNSTUCK);
         o.STATS = c.KAYIT.STATS;
 
         BotPlusConfig.PlusTarget t = v.PLUS.TARGET;
@@ -298,16 +351,19 @@ public final class Settings {
         t.RANGE_DOWN = false;
         t.NO_LEARN_FLEE = true;
 
-        // HP Bekle (birlesik): "NPC'nin yaninda bekle" = eski HP Bekle; "dolasmaya devam" = eski Yeni Dovus Icin En Az Can.
-        boolean near = c.HP_BEKLE.ENABLED && c.HP_BEKLE.MODE == CoreConfig.HpWaitMode.NEAR;
-        boolean roam = c.HP_BEKLE.ENABLED && c.HP_BEKLE.MODE == CoreConfig.HpWaitMode.ROAM;
+        // Can Bekle (2.7.0: Tamir eklentisinde; eski HP Bekle). "NPC'nin yaninda bekle" = eski HP Bekle; "dolasmaya devam"
+        // = eski Yeni Dovus Icin En Az Can. Tamir eklentisi kapaliysa calismaz. Can 0: kapali.
+        Repair.HpWait hw0 = repair == null || repair.config.CAN_BEKLE == null ? null : repair.config.CAN_BEKLE;
+        boolean waitOn = hw0 != null && hw0.HP > 0;
+        boolean near = waitOn && hw0.MODE != CoreConfig.HpWaitMode.ROAM;
+        boolean roam = waitOn && hw0.MODE == CoreConfig.HpWaitMode.ROAM;
         t.HP_WAIT.ENABLED = near;
-        t.HP_WAIT.WHICH = c.HP_BEKLE.WHICH;
-        t.HP_WAIT.HP = c.HP_BEKLE.HP;
+        t.HP_WAIT.WHICH = hw0 == null || hw0.WHICH == null ? BotPlusConfig.HpWaitWhich.FLAGGED : hw0.WHICH;
+        t.HP_WAIT.HP = hw0 == null ? 70 : Math.max(1, hw0.HP);
 
         BotPlusConfig.Combat vc = v.COMBAT;
         vc.ENABLED = cb != null && cb.FULL;
-        vc.FIGHT_MIN_HP = roam ? c.HP_BEKLE.HP : 0;
+        vc.FIGHT_MIN_HP = roam ? hw0.HP : 0;
         if (cb != null) {
             vc.STYLE = cb.STYLE != null ? cb.STYLE : BotPlusConfig.CombatStyle.ORBIT;
             vc.FIRST_HIT = cb.FIRST_HIT != null ? cb.FIRST_HIT : BotPlusConfig.FirstHit.NORMAL;
@@ -315,11 +371,17 @@ public final class Settings {
             // 2.6.0: tarzlarin ince ayarlari (Yorunge, Sarkac, Dalga, Liman, Yarim Ay, Menzil Kilidi) menude yok: her
             // zaman varsayilan degerler kullanilir (eski kayitli degerler okunmaz).
             if (cb.CLAW != null) vc.CLAW = cb.CLAW;
-            vc.OPTIONS = cb.OPTIONS != null ? cb.OPTIONS : EnumSet.of(BotPlusConfig.CombatOption.PRE_LOCK);
+            // 2.7.0: Secenekler (Kacisi Onle haric) + Menzil listesi. Kovala %70 (dusus %30), vuramazsa en fazla %60'a.
+            java.util.Set<BotPlusConfig.RangeOpt> rg = cb.MENZIL == null ? EnumSet.noneOf(BotPlusConfig.RangeOpt.class) : cb.MENZIL;
+            java.util.Set<BotPlusConfig.CombatOption> co = EnumSet.noneOf(BotPlusConfig.CombatOption.class);
+            if (cb.OPTIONS_SET != null)
+                for (BotPlusConfig.CombatMenuOpt x : cb.OPTIONS_SET) if (x != null) co.add(BotPlusConfig.CombatOption.valueOf(x.name()));
+            if (rg.contains(BotPlusConfig.RangeOpt.FLEE_CUT)) co.add(BotPlusConfig.CombatOption.FLEE_CUT);
+            vc.OPTIONS = co;
             vc.FINISH_FIRST = cb.FINISH_FIRST;
-            vc.CHASE = cb.FLEE != null && cb.FLEE.CHASE;
-            vc.CHASE_DROP = cb.FLEE == null ? 20 : cb.FLEE.DROP;
-            vc.NO_HIT_MIN = cb.RANGE == null ? 60 : cb.RANGE.NO_HIT_MIN;
+            vc.CHASE = rg.contains(BotPlusConfig.RangeOpt.CHASE);
+            vc.CHASE_DROP = 30;
+            vc.NO_HIT_MIN = rg.contains(BotPlusConfig.RangeOpt.NO_HIT_SHRINK) ? 60 : 100;
         } else {
             vc.CHASE = false;
         }
@@ -374,8 +436,8 @@ public final class Settings {
             // 2.4.0 tasimalari: Sadece Bulastir -> Karsi Saldiri "Kacarken Zehirle"; Oyunculara RSB -> PvP Plus "RSB Kullan".
             if (df.INFECT) {
                 try {
-                    if (df.COUNTER == null) df.COUNTER = java.util.EnumSet.noneOf(BotPlusConfig.Counter.class);
-                    df.COUNTER.add(BotPlusConfig.Counter.INFECT);
+                    if (df.COUNTER_SET == null) df.COUNTER_SET = java.util.EnumSet.noneOf(BotPlusConfig.CounterOpt.class);
+                    df.COUNTER_SET.add(BotPlusConfig.CounterOpt.INFECT);
                     df.INFECT = false;
                     Context.saveConfig();
                     Log.i("AYARLAR", "Defense: Sadece Bulastir -> Karsi Saldiri: Kacarken Zehirle olarak tasindi");
@@ -389,9 +451,15 @@ public final class Settings {
                 Log.i("AYARLAR", "Defense: Oyunculara RSB Kullan -> PvP Plus: RSB Kullan olarak tasindi");
             }
             vd.RSB_PLAYERS = df.RSB_PLAYERS || (pvp != null && pvp.config != null && pvp.config.RSB);
-            vd.COUNTER = copy(df.COUNTER, BotPlusConfig.Counter.class);
-            vd.ABILITY = df.ABILITY;
-            vd.INFECT = df.INFECT || (df.COUNTER != null && df.COUNTER.contains(BotPlusConfig.Counter.INFECT));
+            // 2.7.0: Karsi Saldiri listesi (Gemi Yetenegi kendi listesinde: "Kapali" disinda bir sey seciliyse acik).
+            java.util.Set<BotPlusConfig.Counter> cn = java.util.EnumSet.noneOf(BotPlusConfig.Counter.class);
+            if (df.COUNTER_SET != null)
+                for (BotPlusConfig.CounterOpt x : df.COUNTER_SET)
+                    if (x != null && x != BotPlusConfig.CounterOpt.LATE_SPEED) cn.add(BotPlusConfig.Counter.valueOf(x.name()));
+            vd.ABILITY = df.ability();
+            if (vd.ABILITY != null) cn.add(BotPlusConfig.Counter.ABILITY);
+            vd.COUNTER = cn;
+            vd.INFECT = cn.contains(BotPlusConfig.Counter.INFECT);
             vd.FIRMS = df.FIRMS == null ? java.util.EnumSet.of(BotPlusConfig.Firm.ENEMY_FIRM)
                     : df.FIRMS.isEmpty() ? java.util.EnumSet.noneOf(BotPlusConfig.Firm.class) : java.util.EnumSet.copyOf(df.FIRMS);
         } else {
@@ -405,23 +473,62 @@ public final class Settings {
         // Dusman Saldirinca (BotPlus menusu; Defense'ten bagimsiz). Kac / Hizla Atlat'ta dovus birakilir (yarim NPC
         // hatirlanir), kacisi Escape isi yapar; Devam Et'te dovus surer (can siniri altinda yine kacilir).
         BotPlusConfig.OnEnemy oe = v.ON_ENEMY;
-        oe.MODE = c.DUSMAN.MODE;
-        oe.HP = c.DUSMAN.HP;
-        oe.DIST = c.DUSMAN.ATLAT.DIST;
-        oe.CALM_SEC = c.DUSMAN.ATLAT.CALM_SEC;
-        oe.FASTER_PORTAL = c.DUSMAN.ATLAT.FASTER_PORTAL;
-        oe.EMP = c.DUSMAN.ATLAT.EMP;
-        oe.EMP_DIST = c.DUSMAN.ATLAT.EMP_DIST;
-        oe.ESCAPE_OPTS = copy(c.DUSMAN.KAC, BotPlusConfig.EscapeOpt.class);
-        oe.OUTRUN_OPTS = copy(c.DUSMAN.ATLAT.SECENEK, BotPlusConfig.OutrunOpt.class);
-        oe.START_OPTS = copy(c.DUSMAN.BASLANGIC, BotPlusConfig.StartOpt.class);
-        oe.OWN_MODE = c.DUSMAN.OWN == null ? BotPlusConfig.OwnMode.SAME : c.DUSMAN.OWN;
-        oe.ATTACK_STAY = c.DUSMAN.REMEMBER_ATTACK_STAY;
-        oe.PLUS = c.DUSMAN.GELISMIS == null ? new CoreConfig.EscapePlusSet() : c.DUSMAN.GELISMIS;
+        CoreConfig.OnEnemySet ds = c.DUSMAN;
+        oe.MODE = ds.MODE;
+        // 2.7.0: Kacis Cani kaldirildi (0: can yuzunden hicbir mod ezilmez; can dusunce Tamir / DarkBot karar verir).
+        oe.HP = 0;
+        oe.DIST = 2500; // Atlatma Uzakligi menude yok: sabit
+        oe.CALM_SEC = ds.SAKIN;
+        java.util.Set<BotPlusConfig.AtlatOpt> at = ds.ATLAT_SET;
+        oe.FASTER_PORTAL = at.contains(BotPlusConfig.AtlatOpt.FASTER);
+        // Atlatirken EMP Bas -> Savunma -> EMP -> "Kacarken kilit suruyorsa" (2000 yol sabit).
+        oe.EMP = df != null && df.EMP != null && df.EMP.ON && df.EMP.KACARKEN;
+        oe.EMP_DIST = 2000;
+        java.util.Set<BotPlusConfig.PortalOpt> po = ds.PORTAL_SET;
+        java.util.Set<BotPlusConfig.EscapeOpt> eo = java.util.EnumSet.noneOf(BotPlusConfig.EscapeOpt.class);
+        if (po.contains(BotPlusConfig.PortalOpt.CONE)) eo.add(BotPlusConfig.EscapeOpt.CONE);
+        if (po.contains(BotPlusConfig.PortalOpt.RACE)) eo.add(BotPlusConfig.EscapeOpt.RACE);
+        if (po.contains(BotPlusConfig.PortalOpt.ELSE_OUTRUN)) eo.add(BotPlusConfig.EscapeOpt.ELSE_OUTRUN);
+        if (po.contains(BotPlusConfig.PortalOpt.SWITCH_PORTAL)) eo.add(BotPlusConfig.EscapeOpt.SWITCH_PORTAL);
+        if (po.contains(BotPlusConfig.PortalOpt.PASS_JUMP)) eo.add(BotPlusConfig.EscapeOpt.PASS_JUMP);
+        oe.ESCAPE_OPTS = eo;
+        java.util.Set<BotPlusConfig.OutrunOpt> oo = java.util.EnumSet.noneOf(BotPlusConfig.OutrunOpt.class);
+        for (BotPlusConfig.AtlatOpt x : at) if (x != BotPlusConfig.AtlatOpt.FASTER) oo.add(BotPlusConfig.OutrunOpt.valueOf(x.name()));
+        // Yaklasinca Hiz Yetenegi -> Savunma -> Karsi Saldiri.
+        if (df != null && df.COUNTER_SET != null && df.COUNTER_SET.contains(BotPlusConfig.CounterOpt.LATE_SPEED))
+            oo.add(BotPlusConfig.OutrunOpt.LATE_SPEED);
+        oe.OUTRUN_OPTS = oo;
+        java.util.Set<BotPlusConfig.AdvOpt> ad = ds.GELISMIS_SET;
+        // Kilit Kir kaldirildi (Savunma'daki "ilk sikinca" EMP yeterli).
+        oe.START_OPTS = ad.contains(BotPlusConfig.AdvOpt.INSTANT_TURN) ? java.util.EnumSet.of(BotPlusConfig.StartOpt.INSTANT_TURN)
+                : java.util.EnumSet.noneOf(BotPlusConfig.StartOpt.class);
+        oe.OWN_MODE = ds.OWN == null ? BotPlusConfig.OwnMode.SAME : ds.OWN;
+        oe.ATTACK_STAY = ds.REMEMBER_ATTACK_STAY;
+        CoreConfig.EscapePlusSet ep = VIEW_PLUS;
+        ep.RAPID_LOSS = ds.HIZLI == BotPlusConfig.RapidMode.OFF ? 0 : 50; // 2 sn'de %50 (sabit)
+        ep.SMART = false;          // Akilli Kacis kaldirildi
+        ep.CRIT_PORTAL = false;    // Can Kritikse En Yakin Portal kaldirildi
+        ep.SAVE_SKILLS = false;    // Yetenekleri Kacisa Sakla kaldirildi
+        ep.END_HOLD = ad.contains(BotPlusConfig.AdvOpt.END_HOLD);
+        ep.AFTER_SEC = ad.contains(BotPlusConfig.AdvOpt.AFTER_STAY) ? 30 : 0;
+        ep.CORNER_GUARD = ad.contains(BotPlusConfig.AdvOpt.CORNER_GUARD);
+        ep.WIDEN_CONE = po.contains(BotPlusConfig.PortalOpt.WIDEN_CONE);
+        ep.FOLLOW_JUMP = po.contains(BotPlusConfig.PortalOpt.FOLLOW_JUMP);
+        ep.PORTAL_CHAIN = po.contains(BotPlusConfig.PortalOpt.PORTAL_CHAIN);
+        ep.REPAIR_PORTAL = po.contains(BotPlusConfig.PortalOpt.REPAIR_PORTAL);
+        // Arkaya Mayin -> Savunma -> Karsi Saldiri -> Yavaslatici Mayin.
+        ep.MINE_BACK = df != null && df.COUNTER_SET != null && df.COUNTER_SET.contains(BotPlusConfig.CounterOpt.SLM_01);
+        oe.PLUS = ep;
+        oe.RAPID_MODE = ds.HIZLI;
+        oe.CHASE_HOLD = ad.contains(BotPlusConfig.AdvOpt.CHASE_HOLD);
         // PvP ve Push Korumasi: kendi alt eklentileri (kapaliysa Saldir Kac gibi, push kontrolu yok).
         oe.PVP = com.botplus.pvp.Pvp.view(pvp);
         oe.PVP_ON = pvp != null;
         oe.PUSH = com.botplus.push.Push.view(push);
+        // Klan Uyelerine Saldirma: PvP'nin Kimlere Saldir listesinde; PvP kapaliysa da (varsayilan) acik.
+        com.botplus.pvp.Pvp.Config pvc = pvpRaw;
+        oe.CLAN_SAFE = pvc == null || pvc.KIMLER == null || pvc.KIMLER.contains(BotPlusConfig.PvpFirm.CLAN_SAFE);
+        oe.PUSH.SAME_CLAN = oe.CLAN_SAFE;
         // Dusmani Hatirla: BotPlus menusunden (Defense kapali olsa da calisir).
         // Hicbiri secili degilse hatirlama kapali; "Gemine Saldiran" tek basina da patlatani hatirlar (saldiran zaten).
         java.util.Set<BotPlusConfig.RememberWho> hw = c.DUSMAN.HATIRLA;
@@ -487,8 +594,10 @@ public final class Settings {
         }
         vt.TRAVEL_ROAM = true;
 
-        v.RENEW.ENABLED = c.YENILEME.ENABLED;
-        v.RENEW.MODE = c.YENILEME.MODE;
+        // 2.7.0 Yenileme: "DarkBot ayarlari" = BotPlus yenilemez.
+        BotPlusConfig.RenewChoice rc = c.GENEL.YENILE == null ? BotPlusConfig.RenewChoice.DARKBOT : c.GENEL.YENILE;
+        v.RENEW.ENABLED = rc != BotPlusConfig.RenewChoice.DARKBOT;
+        if (v.RENEW.ENABLED) v.RENEW.MODE = BotPlusConfig.RefreshMode.valueOf(rc.name());
 
         v.LOG = c.KAYIT.ENABLED;
         v.LOG_LEVEL = c.KAYIT.LEVEL;

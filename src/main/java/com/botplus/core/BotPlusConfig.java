@@ -1114,6 +1114,12 @@ public class BotPlusConfig {
         public boolean ATTACK_STAY = true;
         /** Gelismis Kacis (BotPlus menusu). */
         public CoreConfig.EscapePlusSet PLUS = new CoreConfig.EscapePlusSet();
+        /** 2.7.0 Hizli can kaybinda ne yapilir (Kapali / Porta kac / Hizinla atlat). */
+        public RapidMode RAPID_MODE = RapidMode.PORTAL;
+        /** 2.7.0 Dusman pesimizden geliyorsa (Atlatma Uzakligi x 1,6 icinde yaklasiyor) kacis bitmez. */
+        public boolean CHASE_HOLD = true;
+        /** 2.7.0 Klan uyelerine hic ates edilmez (PvP, Karsilik, Defense roket / mayin / zehir). */
+        public boolean CLAN_SAFE = true;
     }
 
     /** Kac Secenekleri: dusmandan portala kacarken portal secimi. */
@@ -1148,4 +1154,50 @@ public class BotPlusConfig {
 
     @Configuration("botplus.steal.action")
     public enum StealAction { KILL, REDUCE }
+
+    // ---------------------------------------------------------------- 2.7.0 sade menu listeleri
+
+    /** Hareket (Hareket + Dolasma tek liste). */
+    @Configuration("botplus.move_opts")
+    public enum MoveOpt { AVOID_UNLISTED, AVOID_NEAR_OFF, PASS_PASSIVE, SPEED_ABILITY, UNSTUCK, SHORT_ROAM, SMART_ROAM }
+
+    /** Kutu (tek liste). */
+    @Configuration("botplus.box_opts")
+    public enum BoxOpt { WAIT, RIVAL, FAR_IGNORE, WAY_ROUTE, WAY_NEAR }
+
+    /** Yenileme: DarkBot ayarlari ya da BotPlus yenileme sekli. */
+    @Configuration("botplus.renew_choice")
+    public enum RenewChoice { DARKBOT, MAP, PORTAL, LOGOUT }
+
+    /** Hizli can kaybinda (dusman saldirirken 2 sn'de %50). */
+    @Configuration("botplus.on_enemy.rapid_mode")
+    public enum RapidMode { OFF, PORTAL, OUTRUN }
+
+    /** Hizinla Atlat Secenekleri (menu). LATE_SPEED Savunma'ya tasindi. */
+    @Configuration("botplus.on_enemy.outrun_opts")
+    public enum AtlatOpt { REVERSE, ANTI_CUT, EDGE_SLIDE, SIDE_PASS, EMP_TURN, PORTAL_HOP, FASTER }
+
+    /** Portala Kacis Ayarlari (menu). */
+    @Configuration("botplus.on_enemy.portal_opts")
+    public enum PortalOpt { CONE, WIDEN_CONE, RACE, ELSE_OUTRUN, SWITCH_PORTAL, PASS_JUMP, FOLLOW_JUMP, PORTAL_CHAIN, REPAIR_PORTAL }
+
+    /** Gelismis Kacis (menu). */
+    @Configuration("botplus.on_enemy.adv_opts")
+    public enum AdvOpt { INSTANT_TURN, END_HOLD, CHASE_HOLD, AFTER_STAY, CORNER_GUARD }
+
+    /** Combat -> Menzil (tek liste). */
+    @Configuration("botplus.combat.range_opts")
+    public enum RangeOpt { CHASE, FLEE_CUT, NO_HIT_SHRINK }
+
+    /** Combat Secenekleri (menu; Kacisi Onle Menzil listesine tasindi). */
+    @Configuration("botplus.combat.options")
+    public enum CombatMenuOpt { INWARD, OUT_ON_DAMAGE, PRE_LOCK, OPENING_GUARD, RICOCHET }
+
+    /** Defense -> Karsi Saldiri (menu; Gemi Yetenegi kendi listesinde, Yaklasinca Hiz Yetenegi eklendi). */
+    @Configuration("botplus.protect.counter")
+    public enum CounterOpt { DCR_250, R_IC3, PLD_8, SLM_01, IM_01, INFECT, LATE_SPEED }
+
+    /** PvP -> Kimlere Saldir (menu; Klan Uyelerine Saldirma eklendi). */
+    @Configuration("botplus.firm")
+    public enum PvpFirm { ENEMY_FIRM, OWN_FIRM, CLAN_SAFE }
 }

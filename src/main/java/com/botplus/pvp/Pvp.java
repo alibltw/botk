@@ -52,10 +52,38 @@ public class Pvp implements Configurable<Pvp.Config>, Behavior {
         @Dropdown(multi = true)
         public java.util.Set<BotPlusConfig.PvpOption> OPTIONS = java.util.EnumSet.of(BotPlusConfig.PvpOption.RETREAT_STRONG);
 
-        /** Kimlere Saldir: varsayilan sadece dusman sirket (kendi sirketine ates seref kaybettirir). */
+        /** Kimlere Saldir: varsayilan dusman sirket + Klan Uyelerine Saldirma (2.7.0: Push'tan tasindi). */
         @Option("botplus.pvp.firms")
         @Dropdown(multi = true)
+        public java.util.Set<BotPlusConfig.PvpFirm> KIMLER = java.util.EnumSet.of(BotPlusConfig.PvpFirm.ENEMY_FIRM,
+                BotPlusConfig.PvpFirm.CLAN_SAFE);
+
+        @Option.Ignore
         public java.util.Set<BotPlusConfig.Firm> FIRMS = java.util.EnumSet.of(BotPlusConfig.Firm.ENEMY_FIRM);
+
+        @Option.Ignore
+        public boolean MIGRATED_27 = false;
+
+        /** 2.7.0 aktarma: eski Kimlere Saldir + Push'taki "Ayni Klana Saldirma". */
+        public boolean migrate27(boolean clanSafe) {
+            if (MIGRATED_27) return false;
+            java.util.Set<BotPlusConfig.PvpFirm> k = java.util.EnumSet.noneOf(BotPlusConfig.PvpFirm.class);
+            if (FIRMS != null) for (BotPlusConfig.Firm f : FIRMS) if (f != null) k.add(BotPlusConfig.PvpFirm.valueOf(f.name()));
+            if (clanSafe) k.add(BotPlusConfig.PvpFirm.CLAN_SAFE);
+            KIMLER = k;
+            MIGRATED_27 = true;
+            return true;
+        }
+
+        /** Kimlere Saldir'in sirket kismi (kod gorunumu). */
+        public java.util.Set<BotPlusConfig.Firm> firms() {
+            java.util.Set<BotPlusConfig.Firm> f = java.util.EnumSet.noneOf(BotPlusConfig.Firm.class);
+            if (KIMLER != null) {
+                if (KIMLER.contains(BotPlusConfig.PvpFirm.ENEMY_FIRM)) f.add(BotPlusConfig.Firm.ENEMY_FIRM);
+                if (KIMLER.contains(BotPlusConfig.PvpFirm.OWN_FIRM)) f.add(BotPlusConfig.Firm.OWN_FIRM);
+            }
+            return f;
+        }
 
         @Option("botplus.on_enemy.pvp.tag")
         @Tag(Tag.Default.NONE)
@@ -103,8 +131,7 @@ public class Pvp implements Configurable<Pvp.Config>, Behavior {
         v.CONDITIONAL = c.CONDITIONAL;
         v.RETREAT_HP = c.RETREAT_HP;
         v.CROWD = c.CROWD;
-        v.FIRMS = c.FIRMS == null ? java.util.EnumSet.of(BotPlusConfig.Firm.ENEMY_FIRM)
-                : c.FIRMS.isEmpty() ? java.util.EnumSet.noneOf(BotPlusConfig.Firm.class) : java.util.EnumSet.copyOf(c.FIRMS);
+        v.FIRMS = c.KIMLER == null ? java.util.EnumSet.of(BotPlusConfig.Firm.ENEMY_FIRM) : c.firms();
         v.OFF_MAP = c.OFF_MAP;
         v.RSB = c.RSB;
         v.STYLE = c.STYLE == null ? BotPlusConfig.PvpStyle.ORBIT : c.STYLE;

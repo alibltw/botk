@@ -201,12 +201,24 @@ public final class Context {
      */
     public boolean mayFire(Player p, java.util.Set<BotPlusConfig.Firm> firms) {
         if (p == null || firms == null) return false;
+        // 2.7.0 Klan Uyelerine Saldirma (PvP -> Kimlere Saldir): PvP, karsilik, roket / mayin / zehir hepsinde;
+        // Push acik ya da kapali.
+        if (config.ON_ENEMY.CLAN_SAFE && sameClan(p)) return false;
         if (!ownFirm(p)) return firms.contains(BotPlusConfig.Firm.ENEMY_FIRM);
         // Kendi Sirketi Saldirinca: Karsilik Ver'de son 5 sn icinde bize ates edene (Kimlere seciminden bagimsiz) ates
         // edilir; Yok Say / Sadece Kac / Sadece Savunma'da kendi sirketine hic ates edilmez.
         if (config.ON_ENEMY.OWN_MODE == BotPlusConfig.OwnMode.COUNTER) return attackedBy(p, OWN_FIRM_FIRE_MS);
         if (config.ON_ENEMY.OWN_MODE != BotPlusConfig.OwnMode.SAME) return false;
         return firms.contains(BotPlusConfig.Firm.OWN_FIRM) && attackedBy(p, OWN_FIRM_FIRE_MS);
+    }
+
+    public boolean sameClan(Player p) {
+        try {
+            EntityInfo i = p.getEntityInfo(), me = hero.getEntityInfo();
+            return i != null && me != null && i.getClanId() > 0 && i.getClanId() == me.getClanId();
+        } catch (RuntimeException e) {
+            return false;
+        }
     }
 
     /** Ada gore kendi sirketi mi (gorunuyorsa; gorunmuyorsa dusman sirket sayilir: dusman suresi uygulanir). */
@@ -1815,18 +1827,21 @@ public final class Context {
             eu.darkbot.api.game.items.SelectableItem.Ability.CITADEL_TRAVEL,
             eu.darkbot.api.game.items.SelectableItem.Ability.TARTARUS_SPEED_BOOST,
             eu.darkbot.api.game.items.SelectableItem.Ability.TARTARUS_PLUS_SPEED_BOOST};
-    private long speedTryAt;
+    private long speedTryAt, speedNextAt;
+    private static final long SPEED_EFFECT_MS = 10_000;
     private boolean abilitiesLogged, noSpeedLogged;
 
     /** Uzun yol (Plus: Uzun Yolda Hiz Yetenegi): gemide hiz yetenegi varsa ve hazirsa kullanilir. */
     public void speedAbility(double dist, String why) {
         if (!config.PLUS.SPEED_ABILITY() || dist < 3000) return;
         long now = now();
-        if (now - speedTryAt < 2000) return;
+        // 2.7.0: basildiktan sonra etkisi surerken (SPEED_EFFECT_MS) ve basilamayinca 5 sn yeniden denenmez
+        // (eskiden 2 sn'de bir tusa basiliyordu).
+        if (now - speedTryAt < 2000 || now < speedNextAt) return;
         speedTryAt = now;
         if (!abilitiesLogged) {
             abilitiesLogged = true;
-            logAbilities();
+            logAbilities(true);
         }
         boolean any = false;
         // 2.6.0: Pusat Speed Sap de hiz yetenegi (eskiden listede yoktu: "hiz yetenegi yok" yaziyordu). Yetenekleri
@@ -1842,15 +1857,18 @@ public final class Context {
                         eu.darkbot.api.game.items.ItemFlag.READY);
                 if (r != null && r.isSuccessful()) {
                     Stats.count("hiz yetenegi");
+                    speedNextAt = now + SPEED_EFFECT_MS;
                     Log.i("HIZ", a + " kullanildi (" + why + ", " + (int) dist + " yol)");
-                } else {
-                    Log.every("speedfail", 30_000, "HIZ", a + " kullanilamadi: " + r + " (" + why + ")");
+                    return;
                 }
-                return;
+                // Hazir degil (bekleme / etkisi suruyor): siradaki hiz yetenegi denenir.
+                Log.every("speedfail" + a, 30_000, "HIZ", a + " kullanilamadi: " + r + " (" + why + ")");
+                continue;
             } catch (RuntimeException e) {
                 Log.every("speedfail", 30_000, "HIZ", a + " kullanilamadi: " + e);
             }
         }
+        if (any) speedNextAt = now + 5000;
         if (!any && !noSpeedLogged) {
             noSpeedLogged = true;
             Log.i("HIZ", "hiz yetenegi yok (gemide " + SPEED.length + " hiz yeteneginden hicbiri bulunmadi)");
@@ -1858,14 +1876,32 @@ public final class Context {
     }
 
     /** Oturumda bir kez: gemideki yetenekler loga yazilir. */
-    private void logAbilities() {
+    private long abilitiesReadAt;
+
+    /** Savunma -> Gemi Yetenegi listesi icin gemideki yetenekler 30 sn'de bir okunur (gemi degisebilir). */
+    public void abilitiesTick() {
+        long now = now();
+        if (now - abilitiesReadAt < 30_000 || !heroLoaded()) return;
+        abilitiesReadAt = now;
+        boolean first = !abilitiesLogged;
+        abilitiesLogged = true;
+        logAbilities(first);
+    }
+
+    private void logAbilities(boolean log) {
         try {
             StringBuilder sb = new StringBuilder();
+            java.util.List<String> names = new java.util.ArrayList<>();
             for (eu.darkbot.api.game.items.Item it : items.getItems(eu.darkbot.api.game.items.ItemCategory.SHIP_ABILITIES)) {
                 if (sb.length() > 0) sb.append(", ");
                 sb.append(it.getId()).append(it.isAvailable() ? "" : " (yok)");
+                if (!it.isAvailable()) continue;
+                for (eu.darkbot.api.game.items.SelectableItem.Ability a : eu.darkbot.api.game.items.SelectableItem.Ability.values())
+                    if (a.getId().equals(it.getId()) && !names.contains(a.name())) names.add(a.name());
             }
-            Log.i("HIZ", "gemi yetenekleri: " + (sb.length() == 0 ? "yok" : sb));
+            // Savunma -> Gemi Yetenegi listesi gemideki yeteneklerle (2.7.0).
+            if (!names.isEmpty()) com.botplus.defense.Defense.AbilityOptions.known = java.util.Collections.unmodifiableList(names);
+            if (log) Log.i("HIZ", "gemi yetenekleri: " + (sb.length() == 0 ? "yok" : sb));
         } catch (RuntimeException e) {
             Log.i("HIZ", "gemi yetenekleri okunamadi: " + e);
         }
@@ -1941,6 +1977,8 @@ public final class Context {
     public volatile eu.darkbot.api.config.types.NpcInfo locatorPickInfo;
     /** Koruma: PET HP Link istendi (bu zamana kadar). */
     public long hpLinkUntil;
+    /** HP Link secildi ama calismadi: bu zamana kadar yeniden istenmez. */
+    public long hpLinkBlockedUntil;
     /** HP Link yeteneginin kullanildigi (bekleme suresinin basladigi) an. */
     public long hpLinkUsedAt;
     /** Gemiye son hasar gelen an (can + kalkan dustu; Defense izler). */

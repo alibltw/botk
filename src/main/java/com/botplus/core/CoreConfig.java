@@ -28,29 +28,46 @@ public class CoreConfig extends BotPlusConfig {
     @Option("botplus.general")
     public General GENEL = new General();
 
+    /** 2.7.0: Hareket + Dolasma tek liste. */
     @Option("botplus.move")
-    public Move HAREKET = new Move();
+    @Dropdown(multi = true)
+    public Set<MoveOpt> HAREKET_SET = EnumSet.of(MoveOpt.PASS_PASSIVE);
 
-    @Option("botplus.roam")
-    public RoamSet DOLASMA = new RoamSet();
-
+    /** 2.7.0: Kutu tek liste. */
     @Option("botplus.box")
-    public BoxSet KUTU = new BoxSet();
+    @Dropdown(multi = true)
+    public Set<BoxOpt> KUTU_SET = EnumSet.of(BoxOpt.FAR_IGNORE);
 
     @Option("botplus.on_enemy")
     public OnEnemySet DUSMAN = new OnEnemySet();
 
-    @Option("botplus.plus.hp_wait")
-    public HpWaitSet HP_BEKLE = new HpWaitSet();
-
     @Option("botplus.pet")
     public PetSet PET_AYAR = new PetSet();
 
-    @Option("botplus.renew")
-    public RenewSet YENILEME = new RenewSet();
-
     @Option("botplus.log_set")
     public LogSet KAYIT = new LogSet();
+
+    // 2.7.0 oncesi menu gruplari: menude yok, sadece bir kez yeni alanlara aktarilmak icin okunur.
+    @Option.Ignore
+    public Move HAREKET = new Move();
+
+    @Option.Ignore
+    public RoamSet DOLASMA = new RoamSet();
+
+    @Option.Ignore
+    public BoxSet KUTU = new BoxSet();
+
+    /** 2.7.0: Tamir (Repair) eklentisine "Can Bekle" olarak tasindi. */
+    @Option.Ignore
+    public HpWaitSet HP_BEKLE = new HpWaitSet();
+
+    /** 2.7.0: Genel -> Yenileme secimine tasindi. */
+    @Option.Ignore
+    public RenewSet YENILEME = new RenewSet();
+
+    /** 2.7.0 sade menu (Hareket / Kutu / Yenileme / Dusman Saldirinca listeleri) bir kez aktarildi mi. */
+    @Option.Ignore
+    public boolean MIGRATED_27 = false;
 
     /** Eski ayarlar bu menuye aktarildi mi. */
     @Option.Ignore
@@ -83,6 +100,11 @@ public class CoreConfig extends BotPlusConfig {
         @Option("botplus.sort")
         @Dropdown
         public Order SORT = Order.NPC_FIRST;
+
+        /** 2.7.0: DarkBot ayarlari (BotPlus yenilemeye karismaz) ya da BotPlus'in yenileme sekli. */
+        @Option("botplus.renew_choice")
+        @Dropdown
+        public RenewChoice YENILE = RenewChoice.DARKBOT;
     }
 
     public static class Move {
@@ -156,26 +178,46 @@ public class CoreConfig extends BotPlusConfig {
         @Dropdown
         public BotPlusConfig.OwnMode OWN = BotPlusConfig.OwnMode.SAME;
 
-        /** Bu canin altinda dusman ates ediyorsa her secenekte portala kacilir (0: kapali, 100: ilk atista). */
-        @Option("botplus.on_enemy.hp")
-        @Number(min = 0, max = 100, step = 5)
+        /** 2.7.0: dusman saldirirken can 2 sn'de %50 duserse (sabit) ne yapilir. Suren portal kacisi disinda her seyden once. */
+        @Option("botplus.on_enemy.rapid_mode")
+        @Dropdown
+        public RapidMode HIZLI = RapidMode.PORTAL;
+
+        /** Dusman bu kadar sure ates etmezse kacis biter, ise donulur. */
+        @Option("botplus.on_enemy.outrun.calm")
+        @Number(min = 2, max = 30, step = 1)
+        public int SAKIN = 5;
+
+        /** 2.7.0: Hizinla Atlat Secenekleri (yon secimi + Dusman Hizliysa Portala Kac). */
+        @Option("botplus.on_enemy.outrun_opts")
+        @Dropdown(multi = true)
+        public Set<AtlatOpt> ATLAT_SET = EnumSet.of(AtlatOpt.REVERSE, AtlatOpt.ANTI_CUT, AtlatOpt.EDGE_SLIDE,
+                AtlatOpt.SIDE_PASS, AtlatOpt.EMP_TURN, AtlatOpt.PORTAL_HOP, AtlatOpt.FASTER);
+
+        /** 2.7.0: Portala Kacis Ayarlari (porta kacilirken uygulanir). */
+        @Option("botplus.on_enemy.portal_opts")
+        @Dropdown(multi = true)
+        public Set<PortalOpt> PORTAL_SET = EnumSet.allOf(PortalOpt.class);
+
+        /** 2.7.0: Gelismis Kacis (kacisin baslangici / bitisi). */
+        @Option("botplus.on_enemy.adv_opts")
+        @Dropdown(multi = true)
+        public Set<AdvOpt> GELISMIS_SET = EnumSet.allOf(AdvOpt.class);
+
+        // 2.7.0 oncesi alanlar: menude yok, bir kez yeni listelere aktarilir.
+        @Option.Ignore
         public int HP = 30;
 
-        /** Kac Secenekleri: portala kacarken portal secimi. */
-        @Option("botplus.on_enemy.escape_opts")
-        @Dropdown(multi = true)
+        @Option.Ignore
         public Set<EscapeOpt> KAC = EnumSet.allOf(EscapeOpt.class);
 
-        @Option("botplus.on_enemy.outrun")
+        @Option.Ignore
         public OutrunSet ATLAT = new OutrunSet();
 
-        /** Gelismis Kacis (2.5.0): loglardaki olumlerden cikan kacis iyilestirmeleri. */
-        @Option("botplus.on_enemy.plus")
+        @Option.Ignore
         public EscapePlusSet GELISMIS = new EscapePlusSet();
 
-        /** Kacis Baslangici: dusman ilk ates ettiginde. */
-        @Option("botplus.on_enemy.start_opts")
-        @Dropdown(multi = true)
+        @Option.Ignore
         public Set<StartOpt> BASLANGIC = EnumSet.of(StartOpt.INSTANT_TURN);
 
         /** Dusmani Hatirla (2.1.0'da Defense'ten tasindi): hatirlanan oyuncu gorulunce uzaklasilir, yaninda NPC secilmez. */
@@ -421,5 +463,96 @@ public class CoreConfig extends BotPlusConfig {
         if (MIGRATED_SUBS == null) MIGRATED_SUBS = new HashSet<>();
         if (ASIL_MENZIL == null) ASIL_MENZIL = new java.util.HashMap<>();
         if (YAZILAN_MENZIL == null) YAZILAN_MENZIL = new java.util.HashMap<>();
+        // 2.7.0 listeleri
+        if (GENEL.YENILE == null) GENEL.YENILE = RenewChoice.DARKBOT;
+        if (HAREKET_SET == null) HAREKET_SET = EnumSet.of(MoveOpt.PASS_PASSIVE);
+        if (KUTU_SET == null) KUTU_SET = EnumSet.of(BoxOpt.FAR_IGNORE);
+        if (DUSMAN.HIZLI == null) DUSMAN.HIZLI = RapidMode.PORTAL;
+        DUSMAN.SAKIN = Math.max(2, Math.min(30, DUSMAN.SAKIN));
+        if (DUSMAN.ATLAT_SET == null) DUSMAN.ATLAT_SET = EnumSet.allOf(AtlatOpt.class);
+        if (DUSMAN.PORTAL_SET == null) DUSMAN.PORTAL_SET = EnumSet.allOf(PortalOpt.class);
+        if (DUSMAN.GELISMIS_SET == null) DUSMAN.GELISMIS_SET = EnumSet.allOf(AdvOpt.class);
+        // Bilinmeyen (eski / elle bozulmus) kayitlar Gson'da null eleman olur.
+        HAREKET_SET.remove(null);
+        KUTU_SET.remove(null);
+        DUSMAN.ATLAT_SET.remove(null);
+        DUSMAN.PORTAL_SET.remove(null);
+        DUSMAN.GELISMIS_SET.remove(null);
     }
+
+    /** 2.7.0 aktarma (Settings.setCore, 1.x aktarmasindan sonra cagirir). */
+    public void migrate27IfNeeded() {
+        if (MIGRATED_27) return;
+        fixCore(); // eski kayitta eksik gruplar (null) olmasin
+        migrate27();
+        MIGRATED_27 = true;
+        Context.saveConfig();
+    }
+
+    /**
+     * 2.7.0: eski menu gruplarindan (Hareket, Dolasma, Kutu, Yenileme, Dusman Saldirinca) yeni tek satirlik listelere
+     * bir kez aktarma. Yeni kurulumda eski alanlar varsayilanda oldugu icin sonuc da varsayilanlarla ayni.
+     */
+    private void migrate27() {
+        Set<MoveOpt> mv = EnumSet.noneOf(MoveOpt.class);
+        if (HAREKET.AVOID_UNLISTED) mv.add(MoveOpt.AVOID_UNLISTED);
+        if (HAREKET.AVOID_NEAR_OFF) mv.add(MoveOpt.AVOID_NEAR_OFF);
+        if (HAREKET.PASS_PASSIVE) mv.add(MoveOpt.PASS_PASSIVE);
+        if (HAREKET.SPEED_ABILITY) mv.add(MoveOpt.SPEED_ABILITY);
+        if (HAREKET.UNSTUCK) mv.add(MoveOpt.UNSTUCK);
+        if (DOLASMA.SHORT) mv.add(MoveOpt.SHORT_ROAM);
+        if (DOLASMA.SMART) mv.add(MoveOpt.SMART_ROAM);
+        HAREKET_SET = mv;
+
+        Set<BoxOpt> bx = EnumSet.noneOf(BoxOpt.class);
+        if (KUTU.WAIT) bx.add(BoxOpt.WAIT);
+        if (KUTU.RIVAL) bx.add(BoxOpt.RIVAL);
+        // Eski sinir 3000 ya da altindaysa "Uzaktaki Kutulari Yok Say" (3000) acik; daha buyukse sinir kalkar.
+        if (KUTU.MAX_DIST <= BOX_FAR) bx.add(BoxOpt.FAR_IGNORE);
+        if (KUTU.WAY == BoxWay.ON_ROUTE) bx.add(BoxOpt.WAY_ROUTE);
+        if (KUTU.WAY == BoxWay.NEARBY) bx.add(BoxOpt.WAY_NEAR);
+        KUTU_SET = bx;
+
+        GENEL.YENILE = !YENILEME.ENABLED ? RenewChoice.DARKBOT
+                : YENILEME.MODE == RefreshMode.LOGOUT ? RenewChoice.LOGOUT
+                : YENILEME.MODE == RefreshMode.PORTAL ? RenewChoice.PORTAL : RenewChoice.MAP;
+
+        OnEnemySet d = DUSMAN;
+        EscapePlusSet g = d.GELISMIS == null ? new EscapePlusSet() : d.GELISMIS;
+        OutrunSet a = d.ATLAT == null ? new OutrunSet() : d.ATLAT;
+        d.HIZLI = g.RAPID_LOSS > 0 ? RapidMode.PORTAL : RapidMode.OFF;
+        d.SAKIN = Math.max(2, Math.min(30, a.CALM_SEC));
+        Set<AtlatOpt> at = EnumSet.noneOf(AtlatOpt.class);
+        Set<OutrunOpt> os = a.SECENEK == null ? EnumSet.allOf(OutrunOpt.class) : a.SECENEK;
+        if (os.contains(OutrunOpt.REVERSE)) at.add(AtlatOpt.REVERSE);
+        if (os.contains(OutrunOpt.ANTI_CUT)) at.add(AtlatOpt.ANTI_CUT);
+        if (os.contains(OutrunOpt.EDGE_SLIDE)) at.add(AtlatOpt.EDGE_SLIDE);
+        if (os.contains(OutrunOpt.SIDE_PASS)) at.add(AtlatOpt.SIDE_PASS);
+        if (os.contains(OutrunOpt.EMP_TURN)) at.add(AtlatOpt.EMP_TURN);
+        if (os.contains(OutrunOpt.PORTAL_HOP)) at.add(AtlatOpt.PORTAL_HOP);
+        if (a.FASTER_PORTAL) at.add(AtlatOpt.FASTER);
+        d.ATLAT_SET = at;
+        Set<PortalOpt> po = EnumSet.noneOf(PortalOpt.class);
+        Set<EscapeOpt> ko = d.KAC == null ? EnumSet.allOf(EscapeOpt.class) : d.KAC;
+        if (ko.contains(EscapeOpt.CONE)) po.add(PortalOpt.CONE);
+        if (ko.contains(EscapeOpt.RACE)) po.add(PortalOpt.RACE);
+        if (ko.contains(EscapeOpt.ELSE_OUTRUN)) po.add(PortalOpt.ELSE_OUTRUN);
+        if (ko.contains(EscapeOpt.SWITCH_PORTAL)) po.add(PortalOpt.SWITCH_PORTAL);
+        if (ko.contains(EscapeOpt.PASS_JUMP)) po.add(PortalOpt.PASS_JUMP);
+        if (g.WIDEN_CONE) po.add(PortalOpt.WIDEN_CONE);
+        if (g.FOLLOW_JUMP) po.add(PortalOpt.FOLLOW_JUMP);
+        if (g.PORTAL_CHAIN) po.add(PortalOpt.PORTAL_CHAIN);
+        if (g.REPAIR_PORTAL) po.add(PortalOpt.REPAIR_PORTAL);
+        d.PORTAL_SET = po;
+        Set<AdvOpt> ad = EnumSet.noneOf(AdvOpt.class);
+        if (d.BASLANGIC == null || d.BASLANGIC.contains(StartOpt.INSTANT_TURN)) ad.add(AdvOpt.INSTANT_TURN);
+        if (g.END_HOLD) ad.add(AdvOpt.END_HOLD);
+        ad.add(AdvOpt.CHASE_HOLD); // eskiden hep acikti (Atlatma Uzakligi x 1,6)
+        if (g.AFTER_SEC > 0) ad.add(AdvOpt.AFTER_STAY);
+        if (g.CORNER_GUARD) ad.add(AdvOpt.CORNER_GUARD);
+        d.GELISMIS_SET = ad;
+    }
+
+    /** "Uzaktaki Kutulari Yok Say" siniri. */
+    public static final int BOX_FAR = 3000;
 }

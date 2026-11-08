@@ -90,6 +90,13 @@ public final class CombatLogic {
 
     /** Yarida kalan NPC (tamir / dusman yuzunden birakildi): hala yasiyorsa ona donulur. */
     int halfId = -1;
+
+    /** Captcha sonrasi: yarim kalan NPC ve yerel bolge unutulur (kaldigi yerden surulmez). */
+    public void forget() {
+        halfId = -1;
+        localCenter = null;
+        localUntil = 0;
+    }
     long halfUntil;
 
     /** Su an calisan is (bitir-sonra-tamir ve PET icin). */

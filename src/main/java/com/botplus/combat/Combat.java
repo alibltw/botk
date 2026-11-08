@@ -84,22 +84,55 @@ public class Combat implements Configurable<Combat.Config>, eu.darkbot.api.exten
         @Option("botplus.combat.claw")
         public BotPlusConfig.ClawSettings CLAW = new BotPlusConfig.ClawSettings();
 
+        /** 2.7.0: Kacisi Onle Menzil listesine tasindi. */
         @Option("botplus.combat.options")
         @Dropdown(multi = true)
-        public Set<BotPlusConfig.CombatOption> OPTIONS = EnumSet.of(BotPlusConfig.CombatOption.PRE_LOCK,
-                BotPlusConfig.CombatOption.OPENING_GUARD, BotPlusConfig.CombatOption.RICOCHET);
+        public Set<BotPlusConfig.CombatMenuOpt> OPTIONS_SET = EnumSet.of(BotPlusConfig.CombatMenuOpt.PRE_LOCK,
+                BotPlusConfig.CombatMenuOpt.OPENING_GUARD, BotPlusConfig.CombatMenuOpt.RICOCHET);
 
         @Option("botplus.combat.finish_first")
         public boolean FINISH_FIRST = true;
 
-        @Option("botplus.combat.flee")
-        public Flee FLEE = new Flee();
+        /** 2.7.0: Kacan NPC + Menzil tek liste (kovala %70, vuramazsa en fazla %60'a kis: sabit). */
+        @Option("botplus.combat.range_opts")
+        @Dropdown(multi = true)
+        public Set<BotPlusConfig.RangeOpt> MENZIL = EnumSet.of(BotPlusConfig.RangeOpt.NO_HIT_SHRINK);
 
         @Option("botplus.combat.target")
         public Target TARGET = new Target();
 
-        @Option("botplus.combat.range")
+        // 2.7.0 oncesi alanlar: menude yok, bir kez yeni listelere aktarilir.
+        @Option.Ignore
+        public Set<BotPlusConfig.CombatOption> OPTIONS = EnumSet.of(BotPlusConfig.CombatOption.PRE_LOCK,
+                BotPlusConfig.CombatOption.OPENING_GUARD, BotPlusConfig.CombatOption.RICOCHET);
+
+        @Option.Ignore
+        public Flee FLEE = new Flee();
+
+        @Option.Ignore
         public Range RANGE = new Range();
+
+        @Option.Ignore
+        public boolean MIGRATED_27 = false;
+
+        /** 2.7.0 aktarma (setConfig'te bir kez). true: aktarildi, kaydedilmeli. */
+        public boolean migrate27() {
+            if (MIGRATED_27) return false;
+            Set<BotPlusConfig.CombatMenuOpt> o = EnumSet.noneOf(BotPlusConfig.CombatMenuOpt.class);
+            if (OPTIONS != null)
+                for (BotPlusConfig.CombatOption c : OPTIONS) {
+                    if (c == null || c == BotPlusConfig.CombatOption.FLEE_CUT) continue;
+                    o.add(BotPlusConfig.CombatMenuOpt.valueOf(c.name()));
+                }
+            OPTIONS_SET = o;
+            Set<BotPlusConfig.RangeOpt> m = EnumSet.noneOf(BotPlusConfig.RangeOpt.class);
+            if (FLEE != null && FLEE.CHASE) m.add(BotPlusConfig.RangeOpt.CHASE);
+            if (OPTIONS != null && OPTIONS.contains(BotPlusConfig.CombatOption.FLEE_CUT)) m.add(BotPlusConfig.RangeOpt.FLEE_CUT);
+            if (RANGE == null || RANGE.NO_HIT_MIN < 100) m.add(BotPlusConfig.RangeOpt.NO_HIT_SHRINK);
+            MENZIL = m;
+            MIGRATED_27 = true;
+            return true;
+        }
     }
 
     public static class Flee {

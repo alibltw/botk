@@ -78,6 +78,8 @@ public final class Escape {
     private static final long HOP_CALM_MS = 3000;
     /** Kacarken Portaldan Atla: portala gidip atlamak icin en fazla bu kadar sure (ates olmasa da kacis surer). */
     private static final long HOP_HOLD_MS = 20_000;
+    private static final double HOP_PASS = 400;
+    private static final int HOP_TRIES = 3;
     /** Kacis noktasi diger takip edilen saldiranlara bundan yakin olamaz. */
     private static final double OTHER_ATTACKER_R = 2000;
     /** Dusman hizi bizim hizimizin bu oranina ulasiyorsa hizli sayilir. */
@@ -214,13 +216,13 @@ public final class Escape {
      * bize ates eden bir oyuncu olmali). Kendi sirketi Yok Say'da da gecerli (12:22 CEPNI: can 5 sn'de %92 -> %47).
      */
     public boolean rapidLoss() {
-        if (smartDanger()) return true;
+        // 2.7.0: sadece bize ates eden bir oyuncu varken (kendi sirketi dahil; grup uyesi ve PET haric), 2 sn'de
+        // %50 (sabit). NPC de vuruyorsa esik artirilmaz; Akilli Kacis kaldirildi.
+        smartWhy = null;
         try {
             int pct = context.config.ON_ENEMY.PLUS.RAPID_LOSS;
             if (pct <= 0 || playerShooter() == null) return false;
-            // NPC de vuruyorsa dusus sadece oyuncudan degil: esik 15 puan yuksek (agir bossta yanlis kacis olmasin).
-            boolean npcToo = context.attackerOfHero() instanceof eu.darkbot.api.game.entities.Npc;
-            return hpDrop() >= (pct + (npcToo ? 15 : 0)) / 100.0;
+            return hpDrop() >= pct / 100.0;
         } catch (RuntimeException e) {
             return false;
         }
@@ -310,6 +312,10 @@ public final class Escape {
         }
     }
 
+    private boolean combatMap() {
+        return context.safety instanceof PlusSafety && ((PlusSafety) context.safety).combatMap();
+    }
+
     /** Can "Kacis Cani" sinirinda ya da altinda mi (dusman ates ederken). */
     public boolean hpLow() {
         int hp = context.config.ON_ENEMY.HP;
@@ -325,14 +331,19 @@ public final class Escape {
             Player s = playerShooter();
             if (s == null && smartWhy != null) s = smartShooter();
             if (s != null) {
-                String why = smartWhy != null ? "Akilli Kacis: " + smartWhy
-                        : "can 2 sn'de " + Log.pct(hpDrop()) + " dustu (Hizli Can Kaybi %" + oe.PLUS.RAPID_LOSS + ")";
-                if (pvp.busy()) pvp.abort(smartWhy != null ? "akilli kacis" : "hizli can kaybi");
-                Stats.count(smartWhy != null ? "akilli kacis" : "hizli can kaybi");
-                Log.i("DUSMAN", Log.ship(s) + " ates ediyor: " + why + ", saldirmadan portala kaciliyor | gemi can "
-                        + Log.pct(context.heroHp()));
-                running = new Job(s, true, false);
+                // 2.7.0 Hizli Can Kaybinda: Porta Kac ya da Hizinla Atlat (saldirandan uzaga). Calisma haritasi disinda /
+                // zaten portala kacilirken portal kacisi surer.
+                boolean toPortal = (oe.RAPID_MODE != BotPlusConfig.RapidMode.OUTRUN && !combatMap())
+                        || context.safetyEscaping() || !context.onWorkingMap();
+                String why = "can 2 sn'de " + Log.pct(hpDrop()) + " dustu (Hizli Can Kaybi %" + oe.PLUS.RAPID_LOSS + ")";
+                if (pvp.busy()) pvp.abort("hizli can kaybi");
+                Stats.count("hizli can kaybi");
+                Log.i("DUSMAN", Log.ship(s) + " ates ediyor: " + why + ", saldirmadan "
+                        + (toPortal ? "portala kaciliyor" : "hizinla atlatiliyor") + " | gemi can " + Log.pct(context.heroHp()));
+                running = new Job(s, toPortal, false);
+                running.rapid = true;
                 context.releaseAttack();
+                if (!toPortal) running.outrun(s, Context.now());
                 return running;
             }
         }
@@ -396,6 +407,11 @@ public final class Escape {
         if (!portal && oe.FASTER_PORTAL && faster(t)) {
             portal = true;
             why = "dusman hizi bizimkine yakin (" + t.getSpeed() + " / " + context.hero.getSpeed() + ", %90 ve ustu)";
+        }
+        // 2.7.0: savasta portaldan atlanamayan haritada portalda beklenmez, hizinla atlatilir (push korumasi haric).
+        if (portal && !already && !feared && !pre && combatMap()) {
+            portal = false;
+            why += " (bu haritada savasta atlanamiyor: hizinla atlatiliyor)";
         }
         Stats.count(pre ? "onceden kacis" : "dusmandan kacis");
         Log.i("DUSMAN", Log.ship(t) + (pre ? " yaklasiyor, ates etmeden kaciliyor (daha once saldirdi, " : " ates ediyor (")
@@ -484,6 +500,8 @@ public final class Escape {
         /** Kacarken Portaldan Atla: son kontrol; secilen portala gidilirken kacis bu zamana kadar surer. */
         private long hopCheckAt, hopUntil;
         private boolean lastFallback;
+        /** Hizli can kaybiyla baslayan kacis. */
+        boolean rapid;
 
         boolean striking() {
             return strikeUntil > 0 && Context.now() < strikeUntil;
@@ -653,7 +671,7 @@ public final class Escape {
             // Sinirli: ates eden dusmanda son ates QUIET_END_MS icinde, onceden kacista en fazla OUTRUN_MAX_MS (ates
             // etmeden golge gibi takip eden oyuncu kacisi sonsuza kadar surdurmesin).
             boolean chaseOk = pre ? Context.now() - start < OUTRUN_MAX_MS : context.attackedBy(p, QUIET_END_MS);
-            if (chaseOk && Context.now() - approachAt < CHASE_HOLD_MS && p.distanceTo(context.hero) < context.config.ON_ENEMY.DIST * 1.6)
+            if (context.config.ON_ENEMY.CHASE_HOLD && chaseOk && Context.now() - approachAt < CHASE_HOLD_MS && p.distanceTo(context.hero) < context.config.ON_ENEMY.DIST * 1.6)
                 return false;
             // Onceden Kac: hic ates etmediyse yeterince uzaklasinca biter.
             if (pre && !context.attackedBy(p, Math.max(QUIET_END_MS, calmMs * 3)))
@@ -688,11 +706,16 @@ public final class Escape {
                 return true;
             }
             safeOkSince = 0;
+            if (hopMap != 0 && mapId() != 0 && mapId() != hopMap) {
+                Log.i("DUSMAN", "Kacarken Portaldan Atla: portaldan atlandi, kacis bitti (" + (now - start) / 1000 + " sn)");
+                Stats.count("kacarken portaldan atlandi");
+                return false;
+            }
             if (hpLow()) {
                 toPortal("can " + Log.pct(context.heroHp()) + " < %" + context.config.ON_ENEMY.HP);
                 return true;
             }
-            if (rapidLoss()) {
+            if (!combatMap() && context.config.ON_ENEMY.RAPID_MODE == BotPlusConfig.RapidMode.PORTAL && rapidLoss()) {
                 toPortal("hizli can kaybi: 2 sn'de " + Log.pct(hpDrop()));
                 return true;
             }
@@ -723,7 +746,7 @@ public final class Escape {
                 toPortal(OUTRUN_MAX_MS / 1000 + " sn'dir atlatilamadi, hala ates ediyor");
                 return true;
             }
-            if (!empGrace && oe.FASTER_PORTAL && faster(p)) {
+            if (!combatMap() && !empGrace && oe.FASTER_PORTAL && faster(p)) {
                 toPortal("dusman hizi bizimkine yakin (" + p.getSpeed() + " / " + context.hero.getSpeed() + ", %90 ve ustu)");
                 return true;
             }
@@ -733,7 +756,7 @@ public final class Escape {
                 if (closingSince == 0) closingSince = now;
             } else if (lastDist >= 0 && d > lastDist + 5) closingSince = 0;
             lastDist = d;
-            if (oe.FASTER_PORTAL && closingSince > 0 && now - closingSince > CLOSING_MS) {
+            if (!combatMap() && oe.FASTER_PORTAL && closingSince > 0 && now - closingSince > CLOSING_MS) {
                 toPortal("dusman " + CLOSING_MS / 1000 + " sn'dir yaklasiyor (" + (int) d + ")");
                 return true;
             }
@@ -744,28 +767,76 @@ public final class Escape {
                 if (context.useSpeedNow("Yaklasinca Hiz Yetenegi: " + threatName + " " + (int) d + " uzakta ve yaklasiyor"))
                     speedUsed = true;
             }
-            // Kacarken Portaldan Atla: hasar kesildiyse ve yolda (kacis yonunde) atlanabilir portal varsa ona sapilir.
-            if (oe.OUTRUN_OPTS.contains(BotPlusConfig.OutrunOpt.PORTAL_HOP) && now - hopCheckAt > 500 && lockAway != null
-                    && context.safety instanceof PlusSafety) {
-                hopCheckAt = now;
-                boolean calmNow;
-                try {
-                    calmNow = !context.hero.getHealth().hpDecreasedIn((int) HOP_CALM_MS) && !context.attackedBy(p, HOP_CALM_MS);
-                } catch (RuntimeException e) {
-                    calmNow = false;
-                }
-                if (calmNow) {
-                    Location hop = ((PlusSafety) context.safety).hopPortal(context.hero, lockAway, HOP_DIST, HOP_DEG, p);
-                    if (hop != null) {
-                        ((PlusSafety) context.safety).preferPortal(hop);
-                        hopUntil = now + HOP_HOLD_MS;
-                        toPortal("Kacarken Portaldan Atla: " + HOP_CALM_MS / 1000 + " sn'dir hasar yok, yoldaki portal "
-                                + Log.loc(hop) + " " + (int) context.hero.distanceTo(hop) + " uzakta");
-                        return true;
-                    }
-                }
+            // 2.7.0 Kacarken Portaldan Atla: kacis yonunde (en fazla 30 derece sapma, dusmandan once varilan) yakin
+            // portal varsa yol onun ustunden alinir; durmadan gecerken atlama denenir. Oyun reddederse (savas) atlatma
+            // aynen surer, portal birakilir.
+            if (oe.OUTRUN_OPTS.contains(BotPlusConfig.OutrunOpt.PORTAL_HOP) && lockAway != null && context.safety instanceof PlusSafety) {
+                if (hopTick(p, now)) return true;
             }
             outrun(p, now);
+            return true;
+        }
+
+        /** Kacarken Portaldan Atla: secilen portal, son atlama denemesi, deneme sayisi. */
+        private eu.darkbot.api.game.entities.Portal hopP;
+        private long hopTryAt, hopPickAt;
+        private int hopTries;
+        private final java.util.Set<Integer> hopSkip = new java.util.HashSet<>();
+        private int hopMap;
+
+        private int mapId() {
+            try {
+                return context.star.getCurrentMap().getId();
+            } catch (RuntimeException e) {
+                return 0;
+            }
+        }
+
+        /** true: bu tikte portalin ustunden geciliyor (hareket verildi). */
+        private boolean hopTick(Player p, long now) {
+            PlusSafety ps = (PlusSafety) context.safety;
+            if (hopP != null && (!hopP.isValid() || hopTries >= HOP_TRIES || context.hero.distanceTo(hopP) > HOP_DIST * 1.5)) {
+                if (hopTries >= HOP_TRIES) {
+                    hopSkip.add(hopP.getId());
+                    Log.i("DUSMAN", "Kacarken Portaldan Atla: " + hopTries + " denemede atlanamadi, hizinla atlatmaya devam");
+                }
+                hopP = null;
+            }
+            if (hopP == null && now - hopPickAt > 1000) {
+                hopPickAt = now;
+                Location l = ps.hopPortal(context.hero, lockAway, HOP_DIST, HOP_DEG, p);
+                if (l != null) for (eu.darkbot.api.game.entities.Portal po : context.ents.getPortals())
+                    if (po.isValid() && !hopSkip.contains(po.getId()) && po.distanceTo(l) < 50) {
+                        hopP = po;
+                        hopTries = 0;
+                        Log.i("DUSMAN", "Kacarken Portaldan Atla: yol " + Log.loc(l) + " portalinin ustunden ("
+                                + (int) context.hero.distanceTo(po) + " uzakta), gecerken atlanacak");
+                        break;
+                    }
+            }
+            if (hopP == null) return false;
+            if (hopMap == 0) hopMap = mapId();
+            // Portalin kacis yonundeki obur tarafi: gemi durmadan ustunden gecer.
+            double run = lockAway + Math.PI;
+            Location beyond = Location.of(hopP.getX() + Math.cos(run) * HOP_PASS, hopP.getY() + Math.sin(run) * HOP_PASS);
+            if (context.hero.distanceTo(hopP) > HOP_PASS * 0.8 && context.hero.distanceTo(beyond) < context.hero.distanceTo(hopP)) {
+                // Portali gectik ama atlanamadi: bir dahaki gecis icin ayni yonde devam (yeni portal aranir).
+                hopTries = HOP_TRIES;
+                return false;
+            }
+            context.hero.setRunMode();
+            context.moveTo(context.hero.distanceTo(hopP) > 400 ? Location.of(hopP.getX(), hopP.getY()) : beyond);
+            if (context.hero.distanceTo(hopP) <= 250 && now - hopTryAt >= 1000) {
+                hopTryAt = now;
+                hopTries++;
+                hopUntil = now + 3000;
+                try {
+                    context.move.jumpPortal(hopP);
+                } catch (RuntimeException ignored) {
+                }
+                Stats.count("kacarken portal");
+                Log.i("DUSMAN", "Kacarken Portaldan Atla: gecerken atlama denendi (" + hopTries + ". deneme)");
+            }
             return true;
         }
 

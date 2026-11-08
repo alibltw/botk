@@ -66,6 +66,28 @@ public class Repair implements Configurable<Repair.Config>, eu.darkbot.api.exten
 
         @Option("botplus.repair.idle_set")
         public Idle IDLE = new Idle();
+
+        /** 2.7.0: eski BotPlus "HP Bekle" (can bu sinirin altindayken yeni NPC'ye saldirilmaz). */
+        @Option("botplus.repair.hp_wait")
+        public HpWait CAN_BEKLE = new HpWait();
+
+        @Option.Ignore
+        public boolean MIGRATED_27 = false;
+    }
+
+    /** Can Bekle: 0 kapali. */
+    public static class HpWait {
+        @Option("botplus.repair.hp_wait.hp")
+        @Number(min = 0, max = 100, step = 5)
+        public int HP = 0;
+
+        @Option("botplus.plus.hp_wait.which")
+        @Dropdown
+        public BotPlusConfig.HpWaitWhich WHICH = BotPlusConfig.HpWaitWhich.FLAGGED;
+
+        @Option("botplus.plus.hp_wait.mode")
+        @Dropdown
+        public com.botplus.core.CoreConfig.HpWaitMode MODE = com.botplus.core.CoreConfig.HpWaitMode.NEAR;
     }
 
     public static class Idle {

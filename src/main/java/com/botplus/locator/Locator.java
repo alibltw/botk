@@ -73,6 +73,7 @@ public final class Locator {
         return null;
     }
     private static final double EMPTY_R = 300;
+    private static final long DEAD_MAX_MS = 30_000;
     /** Olen NPC'lerin yeri (x, y, bitis), son 3: bulucunun isareti bir sure orada kalir, gidilmez. */
     private final List<double[]> deadZones = new ArrayList<>();
 
@@ -83,7 +84,8 @@ public final class Locator {
     /** NPC oldu: DEAD_SEC sn bu yerin DEAD_R yakinindaki isarete gidilmez (oldurulen NPC'nin eski isareti). */
     public void npcDied(Location at) {
         if (at == null) return;
-        deadZones.add(new double[]{at.getX(), at.getY(), Context.now() + context.config.LOCATOR.DEAD_SEC * 1000L});
+        long now = Context.now();
+        deadZones.add(new double[]{at.getX(), at.getY(), now + context.config.LOCATOR.DEAD_SEC * 1000L, now});
         while (deadZones.size() > 3) deadZones.remove(0);
     }
 
@@ -101,11 +103,22 @@ public final class Locator {
         Iterator<double[]> it = deadZones.iterator();
         while (it.hasNext()) {
             double[] z = it.next();
-            if (z[2] < now) {
-                it.remove();
-                continue;
-            }
             Location zl = Location.of(z[0], z[1]);
+            if (z[2] < now) {
+                // 2.7.0: isaret hala olu yerde duruyor ve orada kesilecek NPC yoksa olu yer uzatilir (en fazla
+                // DEAD_MAX_MS): eskiden 6 sn sonra ayni eski isarete geri donuluyordu (logda 30 kez, hep 6,0 sn).
+                boolean stale = live != null && live.distanceTo(zl) <= r && !killableNear(zl, r);
+                // Gemi uzaktaysa (yer gorulmuyor, yeni NPC dogmus olabilir) en fazla 15 sn.
+                boolean seen = context.hero.distanceTo(zl) < 2000;
+                if (stale && now - z[3] < (seen ? DEAD_MAX_MS : 15_000)) {
+                    z[2] = now + 2000;
+                    Log.every("deadext", 5000, "BULUCU", "isaret hala olu yerde " + Log.loc(zl) + ", gidilmiyor ("
+                            + (now - (long) z[3]) / 1000 + " sn)");
+                } else {
+                    it.remove();
+                    continue;
+                }
+            }
             if (killableNear(zl, r)) {
                 Log.d("BULUCU", "olu yer " + Log.loc(zl) + " yakininda kesilecek NPC var, olu yer kaldirildi");
                 it.remove();
@@ -956,8 +969,16 @@ public final class Locator {
                                     + (int) context.hero.distanceTo(np) + "), yakin degil, eski hedefe devam");
                         }
                         if (now - jumpSince > JUMP_SWITCH_MS) {
-                            Log.i("BULUCU", "eski sinyal " + JUMP_SWITCH_MS / 1000 + " sn'dir yok, yenisine geciliyor " + Log.loc(np));
-                            switchTo(np, now);
+                            // 2.7.0: eski hedef yenisinden yakinsa once oraya varilir (A <-> B arasinda yarim yoldan
+                            // donulmesin); varinca NPC yoksa is biter, yeni sinyal sonra alinir.
+                            if (context.hero.distanceTo(loc) < context.hero.distanceTo(np)) {
+                                Log.every("gooldnear", 5000, "BULUCU", "sinyal " + Log.loc(np) + " uzakta ("
+                                        + (int) context.hero.distanceTo(np) + "), eski hedef daha yakin ("
+                                        + (int) context.hero.distanceTo(loc) + "), once ona varilacak");
+                            } else {
+                                Log.i("BULUCU", "eski sinyal " + JUMP_SWITCH_MS / 1000 + " sn'dir yok, yenisine geciliyor " + Log.loc(np));
+                                switchTo(np, now);
+                            }
                         }
                         lastPing = now;
                     }

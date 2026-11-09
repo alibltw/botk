@@ -392,9 +392,8 @@ public final class Escape {
                 if (!toPortal) running.outrun(own, Context.now());
                 return running;
             }
-            t = approaching(oe);
-            if (t == null) return null;
-            pre = true;
+            // 2.8.0: ates etmeden kacis artik Dusman Radari'nda (Kac = yon degistirme, portal / kacis isi yok).
+            return null;
         }
         boolean low = hpLow();
         // Push Korumasi: bu oyuncudan olme siniri asildiysa onunla hic savasilmaz, portala kacilir.
@@ -456,88 +455,7 @@ public final class Escape {
     /** 2.8.0 Radar: onceden kacis portala mi (Dusmandan Kac: secili kacis modu; Trenden Kac: portal). */
     private boolean prePortal;
 
-    /**
-     * 2.8.0 Dusman Radari (dusman ates etmeden kacis; Ne Yapilsin'dan bagimsiz), secilen kosullardan biri tutarsa o
-     * oyuncu, yoksa null:
-     * - Trenden Kac: tren kacma mesafesi icinde ve bize dogru geliyor (portala).
-     * - Dusmandan Kac: dusman (dusman sirket / daha once saldiran / hatirlanan) kacma mesafesi icinde ve yaklasiyor
-     *   (mesafenin yarisi icindeyse her zaman). Hizinla Atlat seciliyse haritada atlatma, degilse portal.
-     * - HP Dusukken Kac: can "HP Dusukken Kac Cani"nin altinda ve 2000 icinde dusman (haritada atlatma).
-     * - Hatirlanan Dusmandan Kac: hatirlanan olduren / push sinirindaki oyuncu 3000 icinde (haritada atlatma).
-     * - Kalabaliktan Kac: 2000 icinde 2+ dusman (haritada atlatma).
-     */
-    private Player approaching(BotPlusConfig.OnEnemy oe) {
-        java.util.Set<BotPlusConfig.RadarOpt> ro = oe.RADAR;
-        if (ro == null || ro.isEmpty()) return null;
-        boolean eFlee = ro.contains(BotPlusConfig.RadarOpt.ENEMY_FLEE), lowFlee = ro.contains(BotPlusConfig.RadarOpt.LOW_HP_FLEE),
-                remFlee = ro.contains(BotPlusConfig.RadarOpt.REMEMBERED_FLEE), crowdFlee = ro.contains(BotPlusConfig.RadarOpt.CROWD_FLEE);
-        // Tren once (portala).
-        Radar.Train tr = context.radar.approachingTrain();
-        if (tr != null) {
-            Player n = tr.nearest(context.hero);
-            if (n != null) {
-                prePortal = true;
-                preWhy = "trenden kac: " + tr.info() + " " + (int) tr.distanceTo(context.hero) + " uzakta ve yaklasiyor";
-                return n;
-            }
-        }
-        if (!eFlee && !lowFlee && !remFlee && !crowdFlee) return null;
-        long now = Context.now();
-        double hp = context.heroHp();
-        double flee = oe.RADAR_ENEMY_FLEE;
-        Player best = null, nearestMulti = null;
-        String bestWhy = null;
-        boolean bestPortal = false;
-        double bd = Double.MAX_VALUE, md = Double.MAX_VALUE;
-        int multi = 0;
-        for (Player p : context.ents.getPlayers()) {
-            if (!p.isValid() || p.getId() == context.hero.getId() || context.petPlayer(p) || context.isGroupMember(p)) continue;
-            boolean killer = (context.isKiller(p) && !context.attackStays(Log.name(p))) || context.push.feared(Log.name(p));
-            if (context.ignoredOwn(p) && !killer) continue;
-            boolean hostile = context.tracked(p) || killer || (context.isEnemyPlayer(p) && Boolean.FALSE.equals(context.firmKnown(p)));
-            if (!hostile) continue;
-            double d = p.distanceTo(context.hero);
-            double[] prev = approach.get(p.getId());
-            boolean closing;
-            if (prev == null || now - (long) prev[1] >= 400) {
-                closing = prev != null && now - (long) prev[1] < 2000 && d < prev[0] - 20;
-                approach.put(p.getId(), new double[]{d, now, closing ? 1 : 0});
-            } else closing = prev[2] > 0;
-            String why = null;
-            boolean portal = false;
-            if (eFlee && d <= flee && (closing || d <= flee * 0.5)) {
-                why = "dusmandan kac: " + (int) d + " uzakta ve yaklasiyor";
-                portal = oe.MODE != BotPlusConfig.OnEnemyMode.OUTRUN;
-            } else if (lowFlee && d <= PRE_LOW_DIST && hp < oe.RADAR_LOW_HP / 100.0)
-                why = "HP dusukken kac: " + (int) d + " uzakta, gemi cani " + Log.pct(hp) + " < %" + oe.RADAR_LOW_HP;
-            else if (remFlee && killer && d <= PRE_KILLER_DIST)
-                why = "hatirlanan dusmandan kac: " + (int) d + " uzakta";
-            if (d <= PRE_MULTI_DIST) {
-                multi++;
-                if (d < md) {
-                    md = d;
-                    nearestMulti = p;
-                }
-            }
-            if (why != null && d < bd) {
-                bd = d;
-                best = p;
-                bestWhy = why;
-                bestPortal = portal;
-            }
-        }
-        if (approach.size() > 50) approach.clear();
-        if (best == null && crowdFlee && multi >= 2) {
-            best = nearestMulti;
-            bestWhy = "kalabaliktan kac: " + (int) PRE_MULTI_DIST + " icinde " + multi + " dusman";
-            bestPortal = false;
-        }
-        if (best != null) {
-            preWhy = bestWhy;
-            prePortal = bestPortal;
-        }
-        return best;
-    }
+    // 2.8.0: eski Onceden Kac (approaching) Dusman Radari'na tasindi (core/Radar: Kac = yon degistirme).
 
     public final class Job implements PlusModule.Job {
         private final int threatId;

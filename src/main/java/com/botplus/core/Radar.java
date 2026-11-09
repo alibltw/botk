@@ -11,8 +11,9 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 2.8.0 Dusman Radari: haritadaki oyunculari izler (dusman, tren, kalabalik). Kacin secenekleri icin tehlike bolgeleri
- * (NPC / sinyal secilmez, yol dolanilir, gemi bolgedeyse tersine gidilir), Kac secenekleri icin Escape'e tren bilgisi.
+ * 2.8.0 Dusman Radari: haritadaki oyunculari izler (dusman, tren, kalabalik). Kacin: bolgedeki NPC / kutu / sinyal
+ * secilmez, yol bolgenin sagindan ya da solundan dolanilir (tersine donulmez). Kac: yon degistirilir (portal / kacis
+ * yok); dusman ates edince "Dusman Saldirinca" devreye girer.
  * <ul>
  * <li>Dusman: dusman sirketten oyuncu ya da hatirlanan olduren (kendi sirketi olsa da). PET, grup ve klan sayilmaz.</li>
  * <li>Tren: birbirine "Tren Yakinlik Mesafesi" kadar yakin, 3 sn boyunca ayni yone (45 derece) giden en az "Tren En Az
@@ -28,9 +29,6 @@ public final class Radar {
     /** 3 sn'de en az bu kadar yol: hareket ediyor. */
     private static final double MOVING_MIN = 150;
     private static final double SAME_DIR = Math.toRadians(45);
-    /** Bolgeden cikinca bu kadar daha uzaklasilir. */
-    private static final double EXIT_MARGIN = 600;
-    private static final long AWAY_TIMEOUT_MS = 30_000;
     /** Hedef secimi: NPC / sinyal bolgenin bu kadar disinda olmali (gemi NPC'nin etrafinda donerken bolgeye girmesin). */
     private static final double NPC_MARGIN = 700;
 
@@ -266,39 +264,57 @@ public final class Radar {
         return null;
     }
 
-    // ---------------------------------------------------------------- Kacin: tehlike bolgeleri
+    // ---------------------------------------------------------------- Kacin: kacinma bolgeleri
 
-    /** Bir kacinma bolgesi: merkez oyuncu, yaricap, neden. */
+    /** Bir kacinma bolgesi: merkez oyuncu, yaricap, neden; nearOff: "Hedef Yakinsa Kacinma" uygulanir mi. */
     private static final class Zone {
         final Player at;
         final double r;
         final String why;
+        final boolean nearOff;
 
-        Zone(Player at, double r, String why) {
+        Zone(Player at, double r, String why, boolean nearOff) {
             this.at = at;
             this.r = r;
             this.why = why;
+            this.nearOff = nearOff;
         }
     }
+
+    /** Kac: kacilan oyuncu id -> {bitis zamani, yaricap}: bu sure yanindaki NPC / kutu / sinyal secilmez. */
+    private final Map<Integer, double[]> fled = new HashMap<>();
 
     private List<Zone> zones() {
         List<Zone> z = new ArrayList<>();
         BotPlusConfig.OnEnemy oe = oe();
         if (oe == null) return z;
         if (on(BotPlusConfig.RadarOpt.ENEMY_AVOID))
-            for (Player p : enemies) if (p.isValid()) z.add(new Zone(p, oe.RADAR_ENEMY_AVOID, "radar: dusman " + Log.name(p)));
+            for (Player p : enemies) if (p.isValid()) z.add(new Zone(p, oe.RADAR_ENEMY_AVOID, "radar: dusman " + Log.name(p), true));
         if (on(BotPlusConfig.RadarOpt.TRAIN_AVOID))
             for (Train t : trains)
-                for (Player p : t.members) if (p.isValid()) z.add(new Zone(p, oe.TRAIN_AVOID, "radar: tren " + t.members.size() + " gemi"));
+                for (Player p : t.members)
+                    if (p.isValid()) z.add(new Zone(p, oe.TRAIN_AVOID, "radar: tren " + t.members.size() + " gemi", false));
         if (on(BotPlusConfig.RadarOpt.CROWD_AVOID))
             for (List<Player> g : crowds)
-                for (Player p : g) if (p.isValid()) z.add(new Zone(p, CROWD_DIST, "radar: kalabalik " + g.size() + " dusman"));
+                for (Player p : g) if (p.isValid()) z.add(new Zone(p, CROWD_DIST, "radar: kalabalik " + g.size() + " dusman", false));
         return z;
     }
 
+    /** Kacilan oyuncularin yaninda hedef secilmez (yol dolanmasina katilmaz). */
+    private String fledReason(Locatable l) {
+        if (fled.isEmpty()) return null;
+        long now = Context.now();
+        fled.values().removeIf(v -> v[0] < now);
+        for (Player p : c.ents.getPlayers()) {
+            double[] v = fled.get(p.getId());
+            if (v != null && p.isValid() && p.distanceTo(l) < v[1]) return "radar: kacilan " + Log.name(p);
+        }
+        return null;
+    }
+
     /**
-     * Nokta bir kacinma bolgesinde mi (nedeni), degilse null: oraya gidilmez, oradaki NPC / sinyal secilmez. NPC'nin
-     * etrafinda donerken gemi bolgeye girmesin diye mesafeye NPC_MARGIN eklenir (yoksa uzaklas / geri don dongusu).
+     * Nokta bir kacinma bolgesinde mi (nedeni), degilse null: oraya gidilmez, oradaki NPC / kutu / sinyal secilmez.
+     * NPC'nin etrafinda donerken gemi bolgeye girmesin diye mesafeye NPC_MARGIN eklenir.
      */
     public String avoidReason(Locatable l) {
         if (l == null || !any()) return null;
@@ -306,26 +322,48 @@ public final class Radar {
             double d = z.at.distanceTo(l);
             if (d < z.r + NPC_MARGIN) return z.why + " " + (int) d + " < " + (int) (z.r + NPC_MARGIN);
         }
-        return null;
+        return fledReason(l);
     }
 
     /**
-     * Yol dolanma: gemiden hedefe duz yol bir kacinma bolgesinden geciyorsa bolgenin disindan (yuvarlak) dolanan ara
-     * nokta; yoksa hedefin kendisi. Hedef bolgedeyse dokunulmaz (hedef secimi zaten bolgeyi yok sayar).
+     * Gidilen hedef (NPC) sonradan bolgeye girdi mi: secimden daha dar (NPC_MARGIN yok) ki sinirda birak / al olmasin.
+     */
+    public String targetReason(Locatable l) {
+        if (l == null || !any()) return null;
+        for (Zone z : zones()) {
+            double d = z.at.distanceTo(l);
+            if (d < z.r) return z.why + " " + (int) d + " < " + (int) z.r;
+        }
+        return null;
+    }
+
+    /** Bolge id -> secilen dolanma tarafi {yon, bitis}: taraf engel geride kalana kadar korunur (sag-sol yapilmaz). */
+    private final Map<Integer, double[]> side = new HashMap<>();
+
+    /**
+     * Kacin: gemiden hedefe yol bir kacinma bolgesinden geciyorsa bolgenin sagindan ya da solundan, yaricap + 300
+     * disindan dolanan ara nokta; yoksa hedefin kendisi. Bolge yaricap + 1500 ileriden gorulur. Gemi bolgenin icindeyse
+     * tersine donulmez: kenara dogru kayarak hedef yonunde devam edilir. Dusman bolgelerinde "Hedef Yakinsa Kacinma"
+     * (hedef 1500'den yakin) dolanmayi kapatir; tren ve kalabalikta kapatmaz.
      */
     public Locatable detour(Locatable dest) {
         if (dest == null || !any()) return dest;
         List<Zone> zs = zones();
         if (zs.isEmpty()) return dest;
+        long now = Context.now();
+        side.values().removeIf(v -> v[1] < now);
         double hx = c.hero.getX(), hy = c.hero.getY();
+        double toDest = c.hero.distanceTo(dest);
+        boolean nearOff = c.config.AVOID_NEAR_OFF && toDest < Context.AVOID_NEAR;
         Zone block = null;
         double bd = Double.MAX_VALUE;
         for (Zone z : zs) {
-            if (z.at.distanceTo(dest) < z.r) return dest;
-            if (z.at.distanceTo(c.hero) < z.r) continue; // bolgenin icindeyiz: uzaklasma isi yapar
-            double sd = segDist(hx, hy, dest.getX(), dest.getY(), z.at.getX(), z.at.getY());
-            if (sd >= z.r) continue;
+            if (z.nearOff && nearOff) continue;
             double d = z.at.distanceTo(c.hero);
+            if (d > z.r + 1500) continue; // ileri bakis
+            boolean inside = d < z.r;
+            double sd = segDist(hx, hy, dest.getX(), dest.getY(), z.at.getX(), z.at.getY());
+            if (!inside && sd >= z.r) continue;
             if (d < bd) {
                 bd = d;
                 block = z;
@@ -334,13 +372,17 @@ public final class Radar {
         if (block == null) return dest;
         double tx = block.at.getX(), ty = block.at.getY(), r = block.r + 300;
         double a0 = Math.atan2(hy - ty, hx - tx), a1 = Math.atan2(dest.getY() - ty, dest.getX() - tx);
-        double diff = norm(a1 - a0);
-        double dir = diff >= 0 ? 1 : -1;
+        double[] kept = side.get(block.at.getId());
+        double dir = kept != null ? kept[0] : (norm(a1 - a0) >= 0 ? 1 : -1);
         for (int k = 0; k < 2; k++, dir = -dir) {
-            double a = a0 + dir * Math.toRadians(60);
+            // Hedef yonune 60 derece ilerideki kenar noktasi (gemi icerideyse de disari ve ileri).
+            double step = Math.min(Math.toRadians(60), Math.abs(norm(a1 - a0)) + Math.toRadians(10));
+            double a = a0 + dir * step;
             Location w = Location.of(tx + Math.cos(a) * r, ty + Math.sin(a) * r);
             if (c.move.canMove(w)) {
-                Log.dEvery("radardetour", 5000, "RADAR", block.why + " yolda: dolanılıyor " + Log.loc(w));
+                side.put(block.at.getId(), new double[]{dir, now + 5000});
+                Log.dEvery("radardetour", 5000, "RADAR", block.why + " yolda: " + (dir > 0 ? "bir yanindan" : "diger yanindan")
+                        + " dolaniliyor " + Log.loc(w));
                 return w;
             }
         }
@@ -359,41 +401,107 @@ public final class Radar {
         return a;
     }
 
-    /** Gemi bir kacinma bolgesinin icindeyse en derindeki bolge, yoksa null. */
-    private Zone inside() {
-        Zone best = null;
-        double depth = 0;
-        for (Zone z : zones()) {
-            double dd = z.r - z.at.distanceTo(c.hero);
-            if (dd > depth) {
-                depth = dd;
-                best = z;
-            }
-        }
-        return best;
+    // ---------------------------------------------------------------- Kac: yon degistirme
+
+    /** Oyuncu 1 sn once gemiye bundan uzaktaydi (yaklasiyor mu); bilinmiyorsa -1. */
+    private double distAgo(Player p, long ms) {
+        ArrayDeque<double[]> q = samples.get(p.getId());
+        if (q == null) return -1;
+        double[] last = q.peekLast(), old = null;
+        if (last == null) return -1;
+        for (double[] s : q) if (last[0] - s[0] >= ms) old = s;
+        if (old == null) return -1;
+        return Math.hypot(old[1] - c.hero.getX(), old[2] - c.hero.getY());
     }
 
-    private long awayCooldown;
+    private boolean closing(Player p) {
+        double before = distAgo(p, 1000);
+        return before >= 0 && p.distanceTo(c.hero) < before - 30;
+    }
 
-    /** Gemi kacinma bolgesindeyse uzaklasma isi (NPC birakilir, tersine gidilir; gidilemiyorsa yuvarlak dolanilir). */
+    /** Kac kosulu tutan oyuncu ve neden ({oyuncu, neden, yaricap}); yoksa null. */
+    private Object[] fleeThreat() {
+        BotPlusConfig.OnEnemy oe = oe();
+        Train tr = approachingTrain();
+        if (tr != null) {
+            Player n = tr.nearest(c.hero);
+            if (n != null) return new Object[]{n, "trenden kac: " + tr.info() + " " + (int) tr.distanceTo(c.hero) + " uzakta ve geliyor",
+                    (double) oe.TRAIN_FLEE};
+        }
+        Player best = null;
+        String why = null;
+        double r = 0, bd = Double.MAX_VALUE;
+        int crowd = 0;
+        Player crowdNear = null;
+        double hp = c.heroHp();
+        for (Player p : enemies) {
+            if (!p.isValid()) continue;
+            double d = p.distanceTo(c.hero);
+            String w = null;
+            double wr = 0;
+            boolean remembered = (c.isKiller(p) && !c.attackStays(Log.name(p))) || c.push.feared(Log.name(p));
+            if (on(BotPlusConfig.RadarOpt.ENEMY_FLEE) && d <= oe.RADAR_ENEMY_FLEE && (closing(p) || d <= oe.RADAR_ENEMY_FLEE * 0.5)) {
+                w = "dusmandan kac: " + (int) d + " uzakta ve yaklasiyor";
+                wr = oe.RADAR_ENEMY_FLEE;
+            } else if (on(BotPlusConfig.RadarOpt.LOW_HP_FLEE) && d <= 2000 && hp < oe.RADAR_LOW_HP / 100.0) {
+                w = "HP dusukken kac: " + (int) d + " uzakta, can " + Log.pct(hp) + " < %" + oe.RADAR_LOW_HP;
+                wr = 2000;
+            } else if (on(BotPlusConfig.RadarOpt.REMEMBERED_FLEE) && remembered && d <= 3000) {
+                w = "hatirlanan dusmandan kac: " + (int) d + " uzakta";
+                wr = 3000;
+            }
+            if (d <= CROWD_DIST) {
+                crowd++;
+                if (crowdNear == null || d < crowdNear.distanceTo(c.hero)) crowdNear = p;
+            }
+            if (w != null && d < bd) {
+                bd = d;
+                best = p;
+                why = w;
+                r = wr;
+            }
+        }
+        if (best == null && on(BotPlusConfig.RadarOpt.CROWD_FLEE) && crowd >= 2 && crowdNear != null)
+            return new Object[]{crowdNear, "kalabaliktan kac: " + (int) CROWD_DIST + " icinde " + crowd + " dusman", CROWD_DIST};
+        return best == null ? null : new Object[]{best, why, r};
+    }
+
+    private long turnCooldown;
+
+    /**
+     * Her tik: Kac kosulu tutarsa yon degistirme isi (portal / kacis yok: hedef birakilir, tehlikenin tersine gidilir;
+     * kacilanin yanindaki NPC / kutu / sinyal 20 sn secilmez, ters taraftaki hedefe gecilir).
+     */
     public PlusModule.Job check() {
-        if (!any() || Context.now() < awayCooldown) return null;
-        Zone z = inside();
-        if (z == null) return null;
+        if (!any() || Context.now() < turnCooldown) return null;
+        Object[] t = fleeThreat();
+        if (t == null) return null;
+        Player p = (Player) t[0];
+        String why = (String) t[1];
+        double r = (Double) t[2];
+        fled.put(p.getId(), new double[]{Context.now() + 20_000, r + NPC_MARGIN});
         c.attack.stopAttack();
         c.attack.setTarget(null);
         c.hero.setLocalTarget(null);
-        Stats.count("radar kacinma");
-        Log.i("RADAR", z.why + " " + (int) z.at.distanceTo(c.hero) + " uzakta (kacinma " + (int) z.r + "): NPC birakildi, uzaklasiliyor");
-        return new Away();
+        Stats.count("radar kacis");
+        Log.i("RADAR", Log.ship(p) + " | " + why + ": hedef birakildi, yon degistiriliyor | " + c.firmInfo(p));
+        return new Turn(p, r, why);
     }
 
-    /** Uzaklasma isi: bolgelerin disina (yaricap + 600) cikana kadar. */
-    public final class Away implements PlusModule.Job {
+    /** Yon degistirme: tehlikenin tersine; tehlike mesafe + 1000 disina cikinca ya da 20 sn sonra biter. */
+    public final class Turn implements PlusModule.Job {
+        private final int id;
+        private final double r;
+        private final String why;
         private final long start = Context.now();
-        private int circleDir;
         private Location target;
         private long targetAt;
+
+        Turn(Player p, double r, String why) {
+            this.id = p.getId();
+            this.r = r;
+            this.why = why;
+        }
 
         @Override
         public String name() {
@@ -407,55 +515,50 @@ public final class Radar {
 
         @Override
         public String status() {
-            return "radar: uzaklaşılıyor";
+            return "radar: yön değiştiriliyor (" + why + ")";
+        }
+
+        private Player threat() {
+            for (Player p : c.ents.getPlayers()) if (p.getId() == id && p.isValid()) return p;
+            return null;
         }
 
         @Override
         public boolean tick() {
             long now = Context.now();
-            if (now - start > AWAY_TIMEOUT_MS) return false;
-            Zone z = null;
-            double worst = -Double.MAX_VALUE;
-            for (Zone k : zones()) {
-                double over = k.r + EXIT_MARGIN - k.at.distanceTo(c.hero);
-                if (over > worst) {
-                    worst = over;
-                    z = k;
-                }
-            }
-            if (z == null || worst <= 0) return false; // tum bolgelerin disinda
+            Player p = threat();
+            if (p == null || now - start > 20_000) return false;
+            double d = p.distanceTo(c.hero);
+            if (d > r + 1000) return false;
             c.pet.setEnabled(true);
             c.hero.setRoamMode();
-            if (target == null || c.hero.distanceTo(target) < 300 || now - targetAt > 1000) {
-                target = awayPoint(z);
+            if (target == null || c.hero.distanceTo(target) < 400 || now - targetAt > 1000) {
+                target = awayPoint(p);
                 targetAt = now;
             }
             c.moveTo(target);
-            Log.dEvery("radaraway", 3000, "RADAR", "uzaklasiliyor " + Log.loc(target) + " | " + z.why + " "
-                    + (int) z.at.distanceTo(c.hero) + " / " + (int) (z.r + EXIT_MARGIN));
+            Log.dEvery("radarturn", 3000, "RADAR", "yon degistirildi, " + Log.name(p) + " " + (int) d + " uzakta, gidilen "
+                    + Log.loc(target));
             return true;
         }
 
-        /** Tehlikenin tam tersi; gidilemiyorsa bolgenin cevresinde yuvarlak (ayni yonde) dolanma. */
-        private Location awayPoint(Zone z) {
-            double tx = z.at.getX(), ty = z.at.getY(), r = z.r + EXIT_MARGIN;
-            double a0 = Math.atan2(c.hero.getY() - ty, c.hero.getX() - tx);
-            Location straight = Location.of(tx + Math.cos(a0) * r, ty + Math.sin(a0) * r);
-            if (circleDir == 0 && c.move.canMove(straight) && c.edgeDist(straight) > 500) return straight;
-            if (circleDir == 0) circleDir = java.util.concurrent.ThreadLocalRandom.current().nextBoolean() ? 1 : -1;
-            for (int k = 0; k < 2; k++) {
-                double a = a0 + circleDir * Math.toRadians(45);
-                Location w = Location.of(tx + Math.cos(a) * r, ty + Math.sin(a) * r);
-                if (c.move.canMove(w)) return w;
-                circleDir = -circleDir;
+        /** Tehlikenin tersi (2500 ileri); gidilemiyorsa 30 / 60 / 90 derece yana. */
+        private Location awayPoint(Player p) {
+            double a0 = Math.atan2(c.hero.getY() - p.getY(), c.hero.getX() - p.getX());
+            Location best = null;
+            for (double off : new double[]{0, 30, -30, 60, -60, 90, -90}) {
+                double a = a0 + Math.toRadians(off);
+                Location w = Location.of(c.hero.getX() + Math.cos(a) * 2500, c.hero.getY() + Math.sin(a) * 2500);
+                if (c.move.canMove(w) && c.edgeDist(w) > 500) return w;
+                if (best == null && c.move.canMove(w)) best = w;
             }
-            return straight;
+            return best != null ? best : Location.of(c.hero.getX() + Math.cos(a0) * 2500, c.hero.getY() + Math.sin(a0) * 2500);
         }
 
         @Override
         public void end(String why) {
-            awayCooldown = Context.now() + 2000;
-            Log.i("RADAR", "uzaklasildi (" + why + ") " + Log.loc(c.hero) + " | " + c.dangerInfo(c.hero));
+            turnCooldown = Context.now() + 3000;
+            Log.i("RADAR", "yon degistirme bitti (" + why + ") " + Log.loc(c.hero) + " | " + c.dangerInfo(c.hero));
         }
     }
 }

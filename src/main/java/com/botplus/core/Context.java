@@ -709,7 +709,8 @@ public final class Context {
         return b.isValid() && !b.isCollected() && b.getInfo() != null && b.getInfo().shouldCollect()
                 && closestDistance(b) < 200
                 && (!isResourceBox(b) || !cargoFull())
-                && !contested(b);
+                && !contested(b)
+                && radar.avoidReason(b) == null; // 2.8.0 Dusman Radari: dusman / tren / kalabalik yanindaki kutu alinmaz
     }
 
     /** DarkBot kurali (Collect: IGNORE_CONTESTED_BOXES): baska gemi kutuya bizden once varacaksa alinmaz. */
@@ -1478,6 +1479,9 @@ public final class Context {
      * - Secilen taraf en az 2 sn ve engel geride kalana kadar korunur. Uygun nokta yoksa hedefe devam.
      */
     public Locatable avoidOnPath(Locatable dest, boolean enabled, double avoidR) {
+        // 2.8.0 Dusman Radari (Kacin): yol dusman / tren / kalabalik bolgesinden geciyorsa once onun yanindan dolanilir
+        // (bulucu, NPC'ye yaklasma, kutu, dolasma: hepsi buradan gecer).
+        dest = radar.detour(dest);
         if (dest == null || !enabled) return dest;
         double hx = hero.getX(), hy = hero.getY();
         double dx = dest.getX() - hx, dy = dest.getY() - hy;
@@ -1618,7 +1622,6 @@ public final class Context {
     public void travelTo(Locatable l) {
         // Bosta tamirde liste disi NPC'lerin etrafindan (daha genis) dolanilir; gidilen yer degismez.
         boolean idle = idleRepair.getAsBoolean() && config.REPAIR.npcAway();
-        l = radar.detour(l); // 2.8.0 Dusman Radari: yol kacinma bolgesinden geciyorsa yuvarlak dolanilir
         moveTo(idle ? avoidOnPath(l, true, Math.max(AVOID_R, 1000)) : avoidOnPath(l));
     }
 

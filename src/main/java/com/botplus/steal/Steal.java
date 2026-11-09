@@ -114,6 +114,9 @@ public final class Steal {
             String k = context.killerZone(n, 2500);
             if (k != null) return "hatirlanan dusman " + k + " yakininda";
         }
+        // 2.8.0 Dusman Radari: dusman / tren / kalabalik bolgesindeki NPC calinmaz.
+        String rz = context.radar.avoidReason(n);
+        if (rz != null) return rz;
         if (c.FROM == BotPlusConfig.StealFrom.ENEMY && (p.getEntityInfo() == null || !p.getEntityInfo().isEnemy())) return Log.ship(p) + " dusman degil";
         // "Herkes" seciliyken de kendi sirketinden oyuncuya saldirilmaz (onur kaybi).
         // Sirket bilgisi okunamazsa da (NONE) kendi sirketi sayilir (Context.ownFirm).

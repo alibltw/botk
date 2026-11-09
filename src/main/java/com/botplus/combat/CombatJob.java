@@ -918,6 +918,14 @@ public final class CombatJob implements PlusModule.Job {
             dropTarget("hasar alamiyor");
             return true;
         }
+        // 2.8.0 Dusman Radari (Kacin): hedef sonradan dusman / tren / kalabalik bolgesine girdiyse birakilir; secim
+        // bolge disindaki baska NPC'ye gecer.
+        String rz = cp.context.radar.targetReason(n);
+        if (rz != null) {
+            dropTarget(rz);
+            cp.context.attack.setTarget(null);
+            return true;
+        }
         // Ates "var" gorunmesi yetmez (on kilitte uzaktan da gorunur): son 1,5 sn'de gercek isabet olmali.
         if (cp.context.shooting(n) && now - lastHitAt < 1500) lastShotAt = now;
         predictDeath(n, now);

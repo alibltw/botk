@@ -82,6 +82,34 @@ public class Defense implements Configurable<Defense.Config>, eu.darkbot.api.ext
         @Option.Ignore
         public boolean MIGRATED_27 = false;
 
+        @Option.Ignore
+        public boolean MIGRATED_28 = false;
+
+        /**
+         * 2.8.0 aktarma (bir kez): eski "Kacarken EMP" tiki EMP listesine (yakalayacakken + portala varmadan), "Portala
+         * varmadan" herkese varsayilan; eski listelerdeki "NPC saldirirken" (EMP / ISH'de artik yok) atilir.
+         */
+        public boolean migrate28() {
+            if (MIGRATED_28) return false;
+            if (EMP == null) EMP = new EmpItem();
+            if (ISH == null) ISH = new Item(40);
+            java.util.Set<BotPlusConfig.EmpWhen> ew = EnumSet.noneOf(BotPlusConfig.EmpWhen.class);
+            if (EMP.WHEN != null) for (BotPlusConfig.EmpWhen x : EMP.WHEN) if (x != null) ew.add(x);
+            if (ew.isEmpty()) ew.add(BotPlusConfig.EmpWhen.HP_LOW);
+            if (EMP.KACARKEN) {
+                ew.add(BotPlusConfig.EmpWhen.ESC_CATCH);
+                ew.add(BotPlusConfig.EmpWhen.ESC_PORTAL);
+            }
+            ew.add(BotPlusConfig.EmpWhen.ESC_PORTAL);
+            EMP.WHEN = ew;
+            java.util.Set<BotPlusConfig.IshWhen> iw = EnumSet.noneOf(BotPlusConfig.IshWhen.class);
+            if (ISH.WHEN != null) for (BotPlusConfig.IshWhen x : ISH.WHEN) if (x != null) iw.add(x);
+            if (iw.isEmpty()) iw.add(BotPlusConfig.IshWhen.HP_LOW);
+            ISH.WHEN = iw;
+            MIGRATED_28 = true;
+            return true;
+        }
+
         /** 2.7.0 aktarma. kacarkenEmp / lateSpeed: BotPlus menusundeki eski "Atlatirken EMP Bas" ve "Yaklasinca Hiz Yetenegi". */
         public boolean migrate27(boolean kacarkenEmp, boolean lateSpeed) {
             if (MIGRATED_27) return false;
@@ -129,14 +157,14 @@ public class Defense implements Configurable<Defense.Config>, eu.darkbot.api.ext
         public boolean RSB_PLAYERS = false;
     }
 
-    /** EMP / Insta-Shield: kullan, ne zaman, can siniri. */
+    /** Insta-Shield: kullan, ne zaman, can siniri. 2.8.0: Ne Zaman listesi Insta-Shield'e ozel (IshWhen). */
     public static class Item {
         @Option("botplus.protect.item.on")
         public boolean ON = false;
 
-        @Option("botplus.protect.when")
+        @Option("botplus.protect.ish_when")
         @Dropdown(multi = true)
-        public Set<BotPlusConfig.When> WHEN = EnumSet.of(BotPlusConfig.When.HP_LOW);
+        public Set<BotPlusConfig.IshWhen> WHEN = EnumSet.of(BotPlusConfig.IshWhen.HP_LOW);
 
         @Option("botplus.protect.item.hp")
         @Number(min = 5, max = 100, step = 5)
@@ -151,14 +179,30 @@ public class Defense implements Configurable<Defense.Config>, eu.darkbot.api.ext
         }
     }
 
-    /** EMP: Insta-Shield'in ayarlari + 2.7.0 "Kacarken kilit suruyorsa" (eski Atlatirken EMP Bas; 2000 yol sabit). */
-    public static class EmpItem extends Item {
-        @Option("botplus.protect.emp.escape_lock")
-        public boolean KACARKEN = true;
+    /**
+     * EMP: kullan, ne zaman (2.8.0: kacis secenekleri dahil, EmpWhen), can siniri, yakalama mesafesi. Eski ayri
+     * "Kacarken kilit suruyorsa" (KACARKEN) tiki kalkti; bir kez listeye aktarilir (migrate28).
+     */
+    public static class EmpItem {
+        @Option("botplus.protect.item.on")
+        public boolean ON = false;
 
-        public EmpItem() {
-            super(50);
-        }
+        @Option("botplus.protect.emp_when")
+        @Dropdown(multi = true)
+        public Set<BotPlusConfig.EmpWhen> WHEN = EnumSet.of(BotPlusConfig.EmpWhen.HP_LOW, BotPlusConfig.EmpWhen.ESC_PORTAL);
+
+        @Option("botplus.protect.item.hp")
+        @Number(min = 5, max = 100, step = 5)
+        public int HP = 50;
+
+        /** 2.8.0 Kacarken: dusman yakalayacakken (bu mesafeye girip yaklasiyorsa) EMP basilir. */
+        @Option("botplus.protect.emp.catch_dist")
+        @Number(min = 200, max = 2000, step = 50)
+        public int CATCH_DIST = 600;
+
+        /** 2.7.0 "Kacarken kilit suruyorsa" (menude yok; 2.8.0'da listeye aktarilir). */
+        @Option.Ignore
+        public boolean KACARKEN = true;
     }
 
     /**

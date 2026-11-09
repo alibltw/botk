@@ -166,9 +166,64 @@ public final class CombatLogic {
         }
     }
 
+    // ---------------------------------------------------------------- 2.8.0 menzil onerisi
+    /** NPC turu -> son "menzil disi" uzakliklari (gemi kendi saldiri mesafesindeyken, en fazla OOR_KEEP). */
+    final Map<String, java.util.ArrayDeque<Double>> oorDist = new HashMap<>();
+    static final int OOR_KEEP = 60, OOR_MIN_SAMPLES = 15;
+
+    void recordOutOfRange(String name, double d) {
+        if (name == null) return;
+        java.util.ArrayDeque<Double> q = oorDist.computeIfAbsent(name, k -> new java.util.ArrayDeque<>());
+        q.addLast(d);
+        while (q.size() > OOR_KEEP) q.pollFirst();
+    }
+
+    /**
+     * Onerilen menzil: yeterli "menzil disi" orneginden en yakin %10'luk dilim - 10, 5'e yuvarlanir. Sadece tablodan
+     * en az 5 kisaysa (yoksa 0: oneri yok). Tabloya yazilmaz; Akilli Menzil aciksa dovus bunu kullanir.
+     */
+    int suggested(String name) {
+        java.util.ArrayDeque<Double> q = name == null ? null : oorDist.get(name);
+        if (q == null || q.size() < OOR_MIN_SAMPLES) return 0;
+        java.util.List<Double> l = new ArrayList<>(q);
+        java.util.Collections.sort(l);
+        double p10 = l.get(Math.max(0, (int) Math.floor(l.size() * 0.10) - 1));
+        int s = (int) (Math.floor((p10 - 10) / 5.0) * 5);
+        int table = tableRange(name);
+        if (table <= 0 || s >= table - 5 || s < table * 0.6) return 0;
+        return s;
+    }
+
+    /** NPC tablosundaki menzil (ada gore, gorunen bir NPC'den; yoksa 0). */
+    private int tableRange(String name) {
+        try {
+            for (eu.darkbot.api.game.entities.Npc n : context.ents.getNpcs())
+                if (n.getInfo() != null && name.equals(n.getInfo().getName())) return (int) n.getInfo().getRadius();
+        } catch (RuntimeException ignored) {
+        }
+        Integer last = lastTable.get(name);
+        return last == null ? 0 : last;
+    }
+
+    /** Son gorulen tablo menzili (NPC gorunmezken de oneri yazilabilsin). */
+    final Map<String, Integer> lastTable = new HashMap<>();
+
+    // ---------------------------------------------------------------- 2.8.0 Kartal Pencesi (isler arasi kalici)
+    /** Bayragi alinan NPC id -> son atis / ilk atis; birakilan -> tekrar denenmeyecegi an. Is yenilense de korunur. */
+    final Map<Integer, Long> clawHit = new HashMap<>();
+    final Map<Integer, Long> clawSince = new HashMap<>();
+    final Map<Integer, Long> clawReleased = new HashMap<>();
+    int clawMap = Integer.MIN_VALUE;
+
+    // ---------------------------------------------------------------- 2.8.0 kutu (isler arasi kalici)
+    /** Kutu id -> toplama denemesi sayisi (yeni is ayni kutuya bastan 3 deneme yapmasin). */
+    final Map<Integer, Integer> boxTriesById = new HashMap<>();
+
     public CombatLogic(Context context, Targeting targeting) {
         this.context = context;
         this.targeting = targeting;
+        // 2.8.0 menzil onerisi (Akilli Menzil ve durum satiri)
+        context.suggestedRange = this::suggested;
         // RSB: kararli ates (yayda, menzilde, ilk isabet alinmis, NPC son 1,5 sn'de hasar almis) ve RSB disi ates sorunu nedeni.
         context.rsbStable = n -> {
             CombatJob k = active;
@@ -472,6 +527,24 @@ public final class CombatLogic {
         Log.i("KOR ACI", name + " guvenli taraf degisti: " + (cand.relative ? "NPC'nin " + REL[cand.sector] : ABS[cand.sector])
                 + " (" + Math.round(cand.rate) + "/sn, onceki " + Math.round(curRate) + "/sn)");
         return cand;
+    }
+
+    /**
+     * 2.8.0: [min, max] icinde en az hasar alinan mesafe bandi {uzaklik, hasar/sn}; bantta en az minSec saniye
+     * gecirilmis olmali. Yoksa null.
+     */
+    double[] bandBest(String name, double min, double max, double minSec) {
+        AngleStats a = angles.get(name);
+        if (a == null || max < min) return null;
+        double[] best = null;
+        for (Map.Entry<Integer, double[]> e : a.band.entrySet()) {
+            double lo = e.getKey() * 50, hi = lo + 50;
+            double[] v = e.getValue();
+            if (v[0] < minSec || hi <= min || lo >= max) continue;
+            double rate = v[1] / v[0];
+            if (best == null || rate < best[1]) best = new double[]{Math.max(min, Math.min(max, lo + 25)), rate};
+        }
+        return best;
     }
 
     /** En az hasarli mesafe bandinin ortasi (en az 10 sn veri), yoksa -1. */

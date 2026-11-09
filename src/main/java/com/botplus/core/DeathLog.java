@@ -72,6 +72,32 @@ public final class DeathLog {
         }
     }
 
+    /**
+     * 2.8.0: olum aninda yeteneklerin durumu: ayarda acik mi, hazir mi (bekleme / yok), en son ne zaman basildi.
+     * Ornegin "EMP: acik, hazirdi, basilmadi" ayar hatasini ilk olumde gosterir.
+     */
+    private String abilityLine(long deathAt) {
+        BotPlusConfig.Protect pc = context.config.PROTECT;
+        boolean on = pc != null && pc.ENABLED;
+        return "EMP " + ability(on && pc.EMP_ON, eu.darkbot.api.game.items.SelectableItem.Special.EMP_01, context.empUsedAt, deathAt)
+                + " | Insta-Shield " + ability(on && pc.ISH_ON, eu.darkbot.api.game.items.SelectableItem.Special.ISH_01, context.ishUsedAt, deathAt)
+                + " | HP Link " + (on && pc.HP_LINK != null && pc.HP_LINK.ENABLED ? "acik" : "kapali")
+                + ", " + (context.hpLinkUsedAt > 0 && deathAt - context.hpLinkUsedAt < 120_000
+                ? (deathAt - context.hpLinkUsedAt) / 1000 + " sn once kullanildi" : "son 2 dk kullanilmadi");
+    }
+
+    private String ability(boolean on, eu.darkbot.api.game.items.SelectableItem item, long usedAt, long deathAt) {
+        String ready;
+        try {
+            java.util.Optional<eu.darkbot.api.game.items.Item> o = context.items.getItem(item);
+            ready = !o.isPresent() ? "gemide yok" : o.get().isReady() ? "hazirdi" : "beklemedeydi";
+        } catch (RuntimeException e) {
+            ready = "durum okunamadi";
+        }
+        String used = usedAt > 0 && deathAt - usedAt < 120_000 ? (deathAt - usedAt) / 1000 + " sn once basildi" : "basilmadi";
+        return (on ? "acik" : "kapali") + ", " + ready + ", " + used;
+    }
+
     /** Son ornegin cani (maxAgeMs'den eskiyse -1): bot duraksadiginda olum ekrani mi ayirt etmek icin (2.6.0). */
     public double lastHp(long maxAgeMs) {
         Sample l = samples.peekLast();
@@ -87,6 +113,12 @@ public final class DeathLog {
     public void report(String killer, long deathAt, boolean npcKiller) {
         try {
             if (killer != null && !killer.isEmpty() && !npcKiller) context.push.died(killer);
+        } catch (RuntimeException ignored) {
+        }
+        // 2.8.0 VERIM: oyuncu / NPC olumu ayri; olum aninda EMP / Insta-Shield / HP Link durumu.
+        if (killer != null && !killer.isEmpty()) Stats.count(npcKiller ? "olum npc" : "olum oyuncu");
+        try {
+            Log.i("OLUM", "yetenekler: " + abilityLine(deathAt));
         } catch (RuntimeException ignored) {
         }
         // Olumden sonraki ornekler (canlandiktan sonra alinmis) atilir; olumden 10 sn'den eski ornekler bu olumu

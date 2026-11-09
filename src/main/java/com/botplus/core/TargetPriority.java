@@ -200,8 +200,11 @@ public final class TargetPriority {
                 }
             }
             double d = context.hero.distanceTo(current);
-            if (d < COLLECT_DIST) {
-                context.stop();
+            // 2.8.0: listede 0 ms olan kutuda gemi durmaz (ustunden gecerken alinir); ms varsa durup beklenir.
+            boolean noWait = Context.boxWait(current) <= 0;
+            if (noWait && d < 400 && !context.collectBusy()) context.moveTo(current);
+            if (d < (noWait ? 400 : COLLECT_DIST)) {
+                if (!noWait) context.stop();
                 if (context.collect(current)) {
                     if (current.getId() != countedId) { // kutu basina bir kez sayilir (tiklama degil)
                         countedId = current.getId();

@@ -68,7 +68,7 @@ import java.util.Set;
 public class BotPlus implements Module, Behavior, Configurable<CoreConfig>, NpcFlags<BotPlusFlag>, GearSelector,
         LaserSelector, ShipModeSelector, Drawable, Listener, Installable {
 
-    public static final String VERSION = "2.7.0";
+    public static final String VERSION = "2.8.0";
     private static final int COMBAT_PET_DIST = 1500;
     private static final long BOX_WAIT_MS = 1200;
     private static final long BOX_COLLECT_MS = 6000;
@@ -323,6 +323,13 @@ public class BotPlus implements Module, Behavior, Configurable<CoreConfig>, NpcF
                 if (name != null) {
                     context.locatorPick = name;
                     context.locatorPickInfo = pick.getNpcInfo();
+                } else if (picks != null && !picks.isEmpty() && context.locatorPick != null) {
+                    // 2.8.0: liste dolu ama bulucuda isaretli (kesilen + PET_LOCATOR) NPC yok: eski tur silinir (eskiden
+                    // son tur kaliyor, bulucu her sinyale gidiyordu). Bos liste (oyun bazen bos verir) silmez.
+                    Log.i("BULUCU", "bulucuda isaretli NPC yok (" + context.locatorPick + " artik secili degil): sinyale gidilmeyecek");
+                    context.locatorPick = null;
+                    context.locatorPickInfo = null;
+                    lastPick = null;
                 }
                 // Ayni tur tekrar tekrar yazilmasin (liste bazen bos gelir).
                 if (name != null && !name.equals(lastPick)) {
@@ -675,6 +682,8 @@ public class BotPlus implements Module, Behavior, Configurable<CoreConfig>, NpcF
     private void tickFallback() {
         Module m = fallback();
         if (m == null) return;
+        // 2.8.0: BotPlus kutu topluyorken DarkBot'un toplayicisi ayni kutuya tekrar tiklamaz.
+        if (context.collectBusy()) return;
         try {
             m.onTickModule();
         } catch (Throwable t) {
@@ -891,6 +900,7 @@ public class BotPlus implements Module, Behavior, Configurable<CoreConfig>, NpcF
         // Gemiyi surmeyen ozellikler (Defense, RSB) hangi modul secili olursa olsun calisir.
         boolean alive = !context.repair.isDestroyed() && context.heroLoaded();
         context.trackAttackers();
+        context.radar.tick(); // 2.8.0 Dusman Radari
         escape.sampleHp(); // Hizli Can Kaybi
         // Captcha / baglanti kesme modulunde EMP, Insta-Shield ve RSB'ye basilmaz (davranis modunda da).
         Module curMod = context.bot.getModule();
@@ -994,6 +1004,7 @@ public class BotPlus implements Module, Behavior, Configurable<CoreConfig>, NpcF
         boolean collect = boxes.collectModule();
         if (job == null) job = repair.check();
         if (job == null) job = locator.checkKiller();
+        if (job == null) job = context.radar.check(); // 2.8.0 Dusman Radari: kacinma bolgesindeyse uzaklasilir
         if (job == null) job = steal.check();
         if (job == null) job = locator.checkIgnore();
         if (job == null && full) {
@@ -1079,6 +1090,7 @@ public class BotPlus implements Module, Behavior, Configurable<CoreConfig>, NpcF
         if (job == null && p < PlusModule.P_REFRESH) job = refresh.check();
         if (job == null && p < PlusModule.P_REPAIR && !context.repair.isDestroyed()) job = repair.check();
         if (job == null && p < PlusModule.P_KILLER) job = locator.checkKiller();
+        if (job == null && p < PlusModule.P_KILLER) job = context.radar.check();
         if (job == null && p < PlusModule.P_STEAL) job = steal.check();
         if (job == null && p < PlusModule.P_IGNORE) job = locator.checkIgnore();
         if (job == null && full && running.job() instanceof CombatJob) {
@@ -1311,9 +1323,14 @@ public class BotPlus implements Module, Behavior, Configurable<CoreConfig>, NpcF
                     Log.i("KUTU", box.getTypeName() + " alindi (" + (now - start) + " ms, " + tries + " deneme)");
                     return false;
                 }
+                // 2.8.0: listede 0 ms olan kutu durmadan, ustunden gecerken alinir; ms varsa ustunde durulup beklenir.
+                boolean noWait = Context.boxWait(box) <= 0;
                 // Once suren toplama beklenir (yarida birakilirsa DarkBot ayni kutuya tekrar tiklar).
                 if (collectUntil > 0) {
-                    if (now < collectUntil) return true;
+                    if (now < collectUntil) {
+                        if (noWait) context.moveTo(box); // durmadan kutunun ustunden gecilir
+                        return true;
+                    }
                     collectUntil = 0; // kutu hala duruyor: tekrar denenir
                 }
                 if (now - start > BOX_COLLECT_MS || tries >= 3) {
@@ -1322,7 +1339,14 @@ public class BotPlus implements Module, Behavior, Configurable<CoreConfig>, NpcF
                     return false;
                 }
                 double d = context.hero.distanceTo(box);
-                if (d < 250) {
+                if (noWait) {
+                    if (d < 400 && context.collect(box)) {
+                        tries++;
+                        collectUntil = now + context.collectWaitLeft();
+                    }
+                    if (d < 400) context.moveTo(box); // yakinda: dogrudan ustune (durmadan)
+                    else if (!context.collectBusy()) context.travelTo(box);
+                } else if (d < 250) {
                     context.stop();
                     if (context.collect(box)) {
                         tries++;
@@ -1493,7 +1517,8 @@ public class BotPlus implements Module, Behavior, Configurable<CoreConfig>, NpcF
                 || (j instanceof Targeting.Wait && ((Targeting.Wait) j).hpWait());
         if (!curStale && (repairJob || !context.outOfCombat(Context.PET_QUIET_MS))) return cur;
         if (repairJob && g != PetGear.GUARD && has(PetGear.GUARD) && !blocked(PetGear.GUARD)) return PetGear.GUARD;
-        if (g != PetGear.ENEMY_LOCATOR && has(PetGear.ENEMY_LOCATOR) && !blocked(PetGear.ENEMY_LOCATOR)) return PetGear.ENEMY_LOCATOR;
+        if (g != PetGear.ENEMY_LOCATOR && has(PetGear.ENEMY_LOCATOR) && !blocked(PetGear.ENEMY_LOCATOR)
+                && context.anyLocatorFlagged()) return PetGear.ENEMY_LOCATOR;
         return cur;
     }
 
@@ -1583,7 +1608,10 @@ public class BotPlus implements Module, Behavior, Configurable<CoreConfig>, NpcF
         // Sadece saldiri altindayken: saldiri bitince PET bulucuya / isine doner.
         // Etkisi surerken bekleme suresi baslar: PET HP Link'te degilse artik istenmez (DarkBot beklemedeki module basmaz,
         // PET bosta kaliyordu); PET zaten HP Link'teyse etkisi bitene kadar tutulur.
-        if ((nowG < context.hpLinkUntil || context.hpLinkActive(nowG)) && context.underAttack() && has(PetGear.HP_LINK)
+        // 2.8.0: kacis surerken (dusman kacisi / portal kacisi) HP Link istendiyse ya da etkisi suruyorsa PET HP Link'ten
+        // cikmaz: "vuruluyor mu" sarti aranmaz (uzaklasinca vurulma kesilip PET bulucuya donuyordu).
+        boolean escapingNow = nowG - context.escapeActiveAt < 1500 || context.safetyEscaping();
+        if ((nowG < context.hpLinkUntil || context.hpLinkActive(nowG)) && (context.underAttack() || escapingNow) && has(PetGear.HP_LINK)
                 && (!cooldown(PetGear.HP_LINK) || currentGear() == PetGear.HP_LINK))
             return PetGear.HP_LINK;
         if (m != null && !m.ended()) {
@@ -1672,7 +1700,8 @@ public class BotPlus implements Module, Behavior, Configurable<CoreConfig>, NpcF
         // Yolda (bulucu / dolasma): PET dusman bulucuda; sinyal ararken zaten bu modul.
         boolean travel = m != null && !m.ended() && (m.job() instanceof Locator.Go
                 || (m.job() instanceof CombatJob && !combat.fighting() && cur == null));
-        if (travel && pc.TRAVEL_LOCATOR && context.config.LOCATOR.GO && has(PetGear.ENEMY_LOCATOR)) {
+        // 2.8.0: "Yolda Bulucu" sadece bulucuda isaretli NPC varsa (yoksa bulucu bos yere sinyal veriyordu).
+        if (travel && pc.TRAVEL_LOCATOR && context.config.LOCATOR.GO && has(PetGear.ENEMY_LOCATOR) && context.anyLocatorFlagged()) {
             // Once git, sonra degistir: PET modulu degisirken gemi ~1 sn duruyor; gemi 1 sn hareket ettikten
             // sonra degistirilir (hareket komutu once gider).
             PetGear curG = currentGear();
@@ -1734,7 +1763,7 @@ public class BotPlus implements Module, Behavior, Configurable<CoreConfig>, NpcF
         }
     }
 
-    private long petMissingSince, petMissingLogAt, petRefreshAt;
+    private long petMissingSince, petMissingLogAt, petRefreshAt, petTickAt;
 
     /**
      * PET 10 sn'dir yoksa (bot calisirken, calisma haritasinda) 30 sn'de bir nedeniyle loglanir. 2.6.0: PET
@@ -1750,7 +1779,10 @@ public class BotPlus implements Module, Behavior, Configurable<CoreConfig>, NpcF
         } catch (RuntimeException e) {
             active = true;
         }
-        if (active) {
+        // 2.8.0: oyun yenilendiyse / bot durup yeniden basladiysa (otomatik ya da elle) sayac sifirdan baslar.
+        boolean gap = petTickAt > 0 && now - petTickAt > 3000; // yukleme sirasinda tik gelmez
+        petTickAt = now;
+        if (active || gap || now - context.lastStoppedAt < 5000 || !context.heroLoaded()) {
             petMissingSince = 0;
             return;
         }
@@ -1775,6 +1807,8 @@ public class BotPlus implements Module, Behavior, Configurable<CoreConfig>, NpcF
         if (context.config.RENEW.own()) {
             Log.i("PET", "PET " + min + " dk acilmadi: BotPlus Yenileme ile yenileniyor (" + context.config.RENEW.MODE + ")");
             context.refreshWantedAt = now;
+            // 2.8.0: DarkBot sadece kendi yenileme suresi dolunca yeniler; PET icin yenileme BotPlus tarafindan yapilir.
+            context.refreshForced = true;
         } else {
             Log.i("PET", "PET " + min + " dk acilmadi: DarkBot ile oyun yenileniyor");
             try {

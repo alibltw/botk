@@ -168,7 +168,8 @@ public final class Context {
     public boolean ignoredOwn(Player p) {
         // Sadece kendi sirketi oldugu BILINENLER yok sayilir (bilinmeyen dusman olabilir: ondan yine kacilir).
         // 2.6.0: Sadece Savunma ve Karsilik Ver'de de kendi sirketinden kacilmaz / takip edilmez.
-        return p != null && ownNoFlee() && Boolean.TRUE.equals(firmKnown(p));
+        // 2.8.0: seni patlatan kendi sirketi oyuncusu hatirlanir, yok sayilmaz (kacis / tehlike bolgesi calisir).
+        return p != null && ownNoFlee() && Boolean.TRUE.equals(firmKnown(p)) && !isKiller(p);
     }
 
     /** Kendi Sirketi Saldirinca: kendi sirketinden kacilmayan modlar (Yok Say, Sadece Savunma, Karsilik Ver). */
@@ -289,6 +290,9 @@ public final class Context {
             ps.plus = () -> this.config.ON_ENEMY.PLUS;
             ps.critical = () -> this.config.ON_ENEMY.HP > 0 && heroHp() <= this.config.ON_ENEMY.HP / 100.0;
             ps.following = () -> threatFollowing.getAsBoolean();
+            // 2.8.0: Takip Edilirse Atla: portal yakininda tehdit (ates eden / yakin dusman) varsa hemen atlanir.
+            ps.threatNear = () -> threatWithin(PlusSafety.FOLLOW_JUMP_DIST);
+            ps.waitGiveUp = () -> portalWaitGiveUp.run();
             // Harita degisim olayi icin acik kayit (DarkBot zaten kaydediyorsa yeniden kaydedilir, cift olmaz).
             try {
                 api.requireAPI(eu.darkbot.api.managers.EventBrokerAPI.class).registerListener(ps);
@@ -459,6 +463,8 @@ public final class Context {
     public long refreshingUntil;
     /** DarkBot yenileme / mola istedi ama gemi guvende degildi (Yenileme "Once Uzaklas"). */
     public long refreshWantedAt;
+    /** 2.8.0: yenilemeyi BotPlus istedi (PET): DarkBot'un suresi dolmadigi icin yenileme BotPlus tarafindan yapilir. */
+    public volatile boolean refreshForced;
     /** DarkBot yenileme / mola zamani geldi (DarkBot canRefresh sordu). */
     public long refreshDueAt;
     /** Son BotPlus isinin bittigi an. */
@@ -782,6 +788,14 @@ public final class Context {
         }
         collectBusyUntil = now() + wait + Math.min(1000, collectTries * 100L) + Math.max(0, travel) + 30;
         return true;
+    }
+
+    /**
+     * 2.8.0: kutunun toplama listesindeki bekleme suresi (ms; bilgi yoksa 500). 0 ms: gemi durmadan ustunden gecerken
+     * alinir; ms varsa gemi kutunun ustunde durup o kadar bekler.
+     */
+    public static long boxWait(eu.darkbot.api.game.entities.Box b) {
+        return b == null || b.getInfo() == null ? 500 : Math.max(0, b.getInfo().getWaitTime());
     }
 
     /** Toplama icin kalan bekleme (ms, yoksa 0). */
@@ -1342,6 +1356,9 @@ public final class Context {
                 return z.why + " (" + (z.until - now) / 1000 + " sn)";
         String keep = keepZone(l);
         if (keep != null) return keep;
+        // 2.8.0 Dusman Radari: Kacin secenekleri (moddan bagimsiz).
+        String rz = radar.avoidReason(l);
+        if (rz != null) return rz;
         // Saldirani Takip: sabit bolge yerine saldiranin kendisi (gorunurken canli, gorunmezse 60 sn son yeri).
         // "Devam Et" seciliyse saldirandan uzak durulmaz (dovus engellenmez).
         if (config.ON_ENEMY.MODE == BotPlusConfig.OnEnemyMode.CONTINUE) return null;
@@ -1601,6 +1618,7 @@ public final class Context {
     public void travelTo(Locatable l) {
         // Bosta tamirde liste disi NPC'lerin etrafindan (daha genis) dolanilir; gidilen yer degismez.
         boolean idle = idleRepair.getAsBoolean() && config.REPAIR.npcAway();
+        l = radar.detour(l); // 2.8.0 Dusman Radari: yol kacinma bolgesinden geciyorsa yuvarlak dolanilir
         moveTo(idle ? avoidOnPath(l, true, Math.max(AVOID_R, 1000)) : avoidOnPath(l));
     }
 
@@ -1778,6 +1796,81 @@ public final class Context {
 
     /** Son EMP basilisi (Defense ya da kacis): EMP Donusu icin. */
     public volatile long empUsedAt;
+
+    // ---- 2.8.0 ortak alanlar (moduller arasi) ----
+    /** Dusman kacisi (Escape isi) en son bu an tiklendi. */
+    public volatile long escapeActiveAt;
+    /** Portalda atlamadan bekleniyor (Takip Edilirse Atla) en son bu an (PlusSafety yazar). */
+    public static volatile long portalWaitAt;
+
+    public static void markPortalWait(long at) {
+        portalWaitAt = at;
+    }
+    /** Haritada tamir isi en son bu an tiklendi. */
+    public volatile long repairActiveAt;
+    /** Kacis EMP ister (ESC_* secenekleri): Defense basar; sira (EMP sonra ISH) ve bekleme orada. true: basildi. */
+    public volatile java.util.function.Predicate<String> empPress = why -> false;
+    /** ISH ister: Defense basar. true: basildi. */
+    public volatile java.util.function.Predicate<String> ishPress = why -> false;
+    /** Akilli Menzil / menzil onerisi: NPC adi -> onerilen menzil (0: oneri yok). Combat kurar. */
+    public volatile java.util.function.ToIntFunction<String> suggestedRange = name -> 0;
+    /** Portalda bekleme suresi doldu: kacis biter (Escape kurar, PlusSafety cagirir). */
+    public volatile Runnable portalWaitGiveUp = () -> {
+    };
+    /** Son Insta-Shield basilisi (Defense). */
+    public volatile long ishUsedAt;
+
+    /** 2.8.0 Dusman Radari (dusman / tren / kalabalik izleme, kacinma bolgeleri). */
+    public final Radar radar = new Radar(this);
+
+    private eu.darkbot.api.config.ConfigSetting<java.util.Map<String, ?>> npcTable;
+    private boolean flaggedCache;
+    private long flaggedAt;
+
+    /**
+     * 2.8.0: NPC tablosunda bulucuda isaretli (kesilen + PET_LOCATOR) en az bir NPC var mi (5 sn onbellek). Yoksa
+     * bulucuya gidilmez, "Yolda Bulucu" PET'i bulucuya alinmaz.
+     */
+    public boolean anyLocatorFlagged() {
+        long t = now();
+        if (t - flaggedAt < 5000) return flaggedCache;
+        flaggedAt = t;
+        boolean any = false;
+        try {
+            if (npcTable == null) npcTable = pluginApi.requireAPI(eu.darkbot.api.managers.ConfigAPI.class).requireConfig("loot.npc_infos");
+            java.util.Map<String, ?> m = npcTable.getValue();
+            if (m != null)
+                for (Object o : m.values())
+                    if (o instanceof eu.darkbot.api.config.types.NpcInfo) {
+                        eu.darkbot.api.config.types.NpcInfo i = (eu.darkbot.api.config.types.NpcInfo) o;
+                        if (i.getShouldKill() && i.hasExtraFlag(eu.darkbot.api.config.types.NpcFlag.PET_LOCATOR)) {
+                            any = true;
+                            break;
+                        }
+                    }
+        } catch (Throwable e) {
+            any = true; // okunamazsa eski davranis (engelleme yok)
+        }
+        flaggedCache = any;
+        return any;
+    }
+
+    /**
+     * 2.8.0: gemiye d icinde tehdit var mi: dusman sirketten oyuncu ya da (hangi sirketten olursa olsun) bize ates
+     * eden / son 3 sn icinde ates etmis oyuncu. PET ve grup uyeleri sayilmaz.
+     */
+    public boolean threatWithin(double d) {
+        try {
+            for (Player p : ents.getPlayers()) {
+                if (p.getId() == hero.getId() || !p.isValid() || petPlayer(p) || isGroupMember(p)) continue;
+                if (p.distanceTo(hero) >= d) continue;
+                boolean enemyFirm = isEnemyPlayer(p) && Boolean.FALSE.equals(firmKnown(p));
+                if (enemyFirm || p.isAttacking(hero) || attackedBy(p, 3000)) return true;
+            }
+        } catch (RuntimeException ignored) {
+        }
+        return false;
+    }
     /** Yaklasinca Hiz Yetenegi: kacis hiz yetenegini tutuyor mu (Defense'in Gemi Yetenegi o ana kadar basilmaz). */
     public volatile java.util.function.BooleanSupplier holdSpeed = () -> false;
 

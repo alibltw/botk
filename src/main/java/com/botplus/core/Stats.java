@@ -50,8 +50,20 @@ public final class Stats {
         return COUNTS.getOrDefault(key, 0);
     }
 
+    /** 2.8.0: sure sayaci (ms) - kacis, tamir gibi islerde gecen toplam sure. */
+    private static final Map<String, Long> TIMES = new LinkedHashMap<>();
+
+    public static synchronized void time(String key, long ms) {
+        if (ms > 0) TIMES.merge(key, ms, Long::sum);
+    }
+
+    public static synchronized long timeMs(String key) {
+        return TIMES.getOrDefault(key, 0L);
+    }
+
     public static synchronized void reset() {
         COUNTS.clear();
+        TIMES.clear();
         runningMs = 0;
     }
 
@@ -151,6 +163,8 @@ public final class Stats {
             if (k.equals("npc") || k.equals("kutu") || k.equals("olum")) continue;
             sb.append(" | ").append(k).append(" ").append(e.getValue());
         }
+        for (Map.Entry<String, Long> e : TIMES.entrySet())
+            sb.append(" | ").append(e.getKey()).append(" suresi ").append(e.getValue() / 1000).append(" sn");
         return sb.toString();
     }
 

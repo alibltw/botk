@@ -66,6 +66,16 @@ public class PlusSafety extends SafetyFinder {
     public volatile BooleanSupplier critical = () -> false;
     /** Kacilan dusman pesimizde mi (Takip Edilirse Atla; Context kurar). */
     public volatile BooleanSupplier following = () -> true;
+    /** 2.8.0 Takip Edilirse Atla: gemiye bu kadar yakin tehdit (ates eden ya da dusman sirket) varsa hemen atlanir. */
+    public static final double FOLLOW_JUMP_DIST = 1500;
+    /** 2.8.0 Takip Edilirse Atla: portalda en fazla bu kadar beklenir (tehdit gelmezse kacis biter). */
+    private static final long FOLLOW_WAIT_MAX_MS = 15_000;
+    /** Gemiye FOLLOW_JUMP_DIST icinde tehdit var mi (Context kurar). */
+    public volatile BooleanSupplier threatNear = () -> false;
+    /** Portal beklemesi doldu: BotPlus kacisi biter (Context kurar). */
+    public volatile Runnable waitGiveUp = () -> {
+    };
+    private long followWaitSince;
     /** Portal Zinciri: diger haritada bekleme suresi. */
     private static final long CHAIN_WAIT_MS = 10_000;
     private long jumpedAt;
@@ -400,20 +410,56 @@ public class PlusSafety extends SafetyFinder {
     @Override
     protected Escaping getEscape() {
         Escaping e = super.getEscape();
-        if (e != Escaping.ENEMY || !charge() || !plusCfg().FOLLOW_JUMP) return e;
+        if (e != Escaping.ENEMY || !charge() || !plusCfg().FOLLOW_JUMP) {
+            followWaitSince = 0;
+            return e;
+        }
         // 2.7.0: savasta atlanamayan haritada portalda beklemek anlamsiz (dusman gelince atlanamaz): normal kacis.
         if (combatMaps.contains(mapId())) return e;
         if (jumpState != JumpState.CURRENT_MAP || safety == null || safety.getType() != SafetyInfo.Type.PORTAL) return e;
         if (hero.getLocationInfo().distanceTo(safety) > safety.getRadius()) return e;
         boolean f;
         try {
-            f = following.getAsBoolean();
+            // 2.8.0: kacilan dusmanin takibi ya da portal yakininda herhangi bir tehdit (ates eden - kendi sirketi
+            // dahil - ya da 1500 icinde dusman sirket): hemen atlanir.
+            f = following.getAsBoolean() || threatNear.getAsBoolean();
         } catch (RuntimeException ex) {
             f = true;
         }
-        if (f) return e;
-        Log.every("followjump", 5000, "GUVENLIK", "Takip Edilirse Atla: portaldayiz, dusman takip etmiyor, atlanmadan bekleniyor");
+        long now = System.currentTimeMillis();
+        if (f) {
+            if (followWaitSince > 0) Log.i("GUVENLIK", "Takip Edilirse Atla: portalda beklerken tehdit yaklasti, atlaniyor");
+            followWaitSince = 0;
+            return e;
+        }
+        if (followWaitSince == 0) {
+            followWaitSince = now;
+            Stats.count("portal bekleme");
+        }
+        Context.markPortalWait(now);
+        if (now - followWaitSince > FOLLOW_WAIT_MAX_MS) {
+            // 2.8.0: 15 sn'dir tehdit yok: kacis biter (calismaya donulur). Bekleme durumu bir sonraki tikte kapanir.
+            Log.i("GUVENLIK", "Takip Edilirse Atla: portalda " + FOLLOW_WAIT_MAX_MS / 1000 + " sn beklendi, tehdit gelmedi: kacis bitiyor");
+            followWaitSince = 0;
+            try {
+                waitGiveUp.run();
+            } catch (RuntimeException ignored) {
+            }
+            return Escaping.WAITING;
+        }
+        Log.every("followjump", 5000, "GUVENLIK", "Takip Edilirse Atla: portaldayiz, dusman takip etmiyor, atlanmadan bekleniyor ("
+                + (now - followWaitSince) / 1000 + " sn)");
         return Escaping.WAITING;
+    }
+
+    /** 2.8.0: dusman kacisinda gidilen portala uzaklik (portal kacisi yoksa -1): Kacarken EMP (portala varmadan). */
+    public double enemyEscapeDist() {
+        try {
+            if (!charge() || escape != Escaping.ENEMY || safety == null || safety.getType() != SafetyInfo.Type.PORTAL) return -1;
+            return hero.getLocationInfo().distanceTo(safety);
+        } catch (RuntimeException ex) {
+            return -1;
+        }
     }
 
     /**
@@ -428,6 +474,7 @@ public class PlusSafety extends SafetyFinder {
                 && safety != null && safety.getType() == SafetyInfo.Type.PORTAL) {
             jumpState = m.equals(prevMap) ? JumpState.RETURNED : JumpState.JUMPED;
             nearPortalSince = 0;
+            if (escape == Escaping.ENEMY && jumpState == JumpState.JUMPED) Stats.count("portal atlama");
             Log.d("GUVENLIK", "harita degisti, atlama tamam (" + jumpState + ")");
         }
         lastMapId = id;

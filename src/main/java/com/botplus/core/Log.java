@@ -279,11 +279,22 @@ public final class Log {
         fileFailed = false;
     }
 
+    private static File dir;
+
+    /** 2.8.0: BotPlus kayit klasoru (mutlak yol, bir kez belirlenir): log ve push kaydi ayni yerde. */
+    public static synchronized File dir() {
+        if (dir == null) {
+            File d = new File("logs").getAbsoluteFile();
+            if (!d.isDirectory() && !d.mkdirs()) d = new File(".").getAbsoluteFile();
+            dir = d;
+        }
+        return dir;
+    }
+
     private static void open(String acc) throws IOException {
         boolean rotate = out != null || (file != null && acc.equals(fileAccount) && written > MAX_FILE);
         close();
-        File dir = new File("logs");
-        if (!dir.isDirectory() && !dir.mkdirs()) dir = new File(".");
+        File dir = dir();
         String base = "botplus-" + acc;
         file = new File(dir, base + ".log");
         if (rotate || file.length() > MAX_FILE) {

@@ -49,9 +49,11 @@ public final class Refresh {
                 && st != null && st.toLowerCase(java.util.Locale.ROOT).contains("escaping refresh");
         if (!wanted && !status) return null;
         context.refreshWantedAt = 0;
+        boolean forced = context.refreshForced;
+        context.refreshForced = false;
         Log.i("YENILEME", "yenileme zamani geldi, portala gidilmiyor (" + (mode == BotPlusConfig.RefreshMode.LOGOUT
                 ? "uzaklasilip cikis yapilacak" : "uzaklasilip haritada yenilenecek") + ")");
-        return new Job(mode);
+        return new Job(mode, forced);
     }
 
     private double danger(Location p) {
@@ -74,6 +76,20 @@ public final class Refresh {
         private long allowedAt, logoutAt;
         private boolean reloadSeen, noWindow, refreshLogged;
         private long lastTickAt;
+        /** 2.8.0: PET icin BotPlus istedi; DarkBot kendi yenilemez, izin gelince BotPlus bir kez yeniler. */
+        private final boolean forced;
+        private boolean forcedDone;
+
+        private void forceRefresh() {
+            if (!forced || forcedDone) return;
+            forcedDone = true;
+            Log.i("YENILEME", "PET yenilemesi: BotPlus yeniliyor");
+            try {
+                context.bot.handleRefresh();
+            } catch (RuntimeException e) {
+                Log.i("YENILEME", "yenilenemedi: " + e);
+            }
+        }
 
         /** Cikis yapiliyor (pencere acildi): bu sirada hicbir komut gonderilmez (PET dahil). */
         public boolean loggingOut() {
@@ -104,6 +120,7 @@ public final class Refresh {
             boolean loaded = context.heroLoaded();
             if (!loaded || (lastTickAt > 0 && now - lastTickAt > 3000)) reloadSeen = true;
             lastTickAt = now;
+            if (!reloadSeen && (noWindow || now - logoutAt >= 22_000)) forceRefresh();
             if (reloadSeen && loaded) {
                 Log.i("YENILEME", "yenilendi (" + (now - logoutAt) / 1000 + " sn)");
                 return false;
@@ -121,8 +138,9 @@ public final class Refresh {
             return true;
         }
 
-        public Job(BotPlusConfig.RefreshMode mode) {
+        public Job(BotPlusConfig.RefreshMode mode, boolean forced) {
             this.mode = mode;
+            this.forced = forced;
         }
 
         @Override
@@ -193,6 +211,7 @@ public final class Refresh {
             }
             if (allowed) {
                 context.stop();
+                forceRefresh();
                 return true;
             }
             // Tehlikeli nokta en erken 1,5 sn'de bir degisir (her tik yeni nokta secilmez).

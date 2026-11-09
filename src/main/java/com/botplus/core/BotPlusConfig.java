@@ -304,7 +304,10 @@ public class BotPlusConfig {
 
         @Option("botplus.protect.emp.when")
         @Dropdown(multi = true)
-        public Set<When> EMP_WHEN = EnumSet.of(When.HP_LOW);
+        public Set<EmpWhen> EMP_WHEN = EnumSet.of(EmpWhen.HP_LOW);
+
+        /** 2.8.0 Kacarken: dusman yakalayacakken EMP mesafesi (kod gorunumu, Defense menusunden). */
+        public transient int EMP_CATCH_DIST = 600;
 
         @Option("botplus.protect.emp.hp")
         @Number(min = 5, max = 100, step = 5)
@@ -315,7 +318,7 @@ public class BotPlusConfig {
 
         @Option("botplus.protect.ish.when")
         @Dropdown(multi = true)
-        public Set<When> ISH_WHEN = EnumSet.of(When.HP_LOW);
+        public Set<IshWhen> ISH_WHEN = EnumSet.of(IshWhen.HP_LOW);
 
         @Option("botplus.protect.ish.hp")
         @Number(min = 5, max = 100, step = 5)
@@ -335,8 +338,8 @@ public class BotPlusConfig {
         public void fix() {
             if (HP_LINK == null) HP_LINK = new HpLinkSet();
             if (KILLER == null) KILLER = new Killer();
-            if (EMP_WHEN == null) EMP_WHEN = EnumSet.of(When.HP_LOW);
-            if (ISH_WHEN == null) ISH_WHEN = EnumSet.of(When.HP_LOW);
+            if (EMP_WHEN == null) EMP_WHEN = EnumSet.of(EmpWhen.HP_LOW);
+            if (ISH_WHEN == null) ISH_WHEN = EnumSet.of(IshWhen.HP_LOW);
             if (HP_LINK.WHEN == null) HP_LINK.WHEN = EnumSet.of(When.HP_LOW);
             // Eski kayitta kalkan secenek (ornegin "Dusman ilk saldirinca") okunamaz, bos deger olarak gelir: atilir.
             EMP_WHEN.remove(null);
@@ -520,6 +523,8 @@ public class BotPlusConfig {
         public transient LockSettings LOCK = new LockSettings();
         public transient ClawSettings CLAW = new ClawSettings();
         public transient boolean OPENING_GUARD = false, RICOCHET = false;
+        /** 2.8.0 (Combat menusunden): Portal Tarafinda Kal, Dusmandan Uzak Tarafta Kal, Onune Gec, Akilli Menzil. */
+        public transient boolean PORTAL_SIDE = false, ENEMY_SIDE = false, INTERCEPT = false, SMART_RANGE = false;
         /** Vuramazsa Menzili Kis: en alt saldiri mesafesi (menzilin %'si). */
         public transient int NO_HIT_MIN = 60;
 
@@ -819,6 +824,17 @@ public class BotPlusConfig {
     @Configuration("botplus.protect.when")
     public enum When { HP_LOW, ENEMY, NPC, ENEMY_FIRST, ATTACKING }
 
+    /**
+     * 2.8.0 EMP Ne Zaman. Ilk dort deger eski When ile ayni adda (kayitli ayar okunur, eski birlikte arama kurali
+     * gecerli). Digerleri her biri tek basina yeterli tetikleyicidir. NPC yok: EMP NPC kilidini kirmaz.
+     */
+    @Configuration("botplus.protect.emp_when")
+    public enum EmpWhen { HP_LOW, ENEMY, ENEMY_FIRST, ATTACKING, RAPID_LOSS, ESC_LOCK, ESC_FIRST_HIT, ESC_CATCH, ESC_PORTAL }
+
+    /** 2.8.0 Insta-Shield Ne Zaman (ilk dort deger EmpWhen gibi; digerleri tek basina yeterli). */
+    @Configuration("botplus.protect.ish_when")
+    public enum IshWhen { HP_LOW, ENEMY, ENEMY_FIRST, ATTACKING, CRITICAL_HP, BIG_HIT, ESC_FIRE, PORTAL_FIRE, REPAIR_FIRE }
+
     /** Koruma: dusmana karsi kullanilacaklar. */
     @Configuration("botplus.protect.counter")
     public enum Counter { DCR_250, R_IC3, PLD_8, SLM_01, IM_01, ABILITY, INFECT }
@@ -911,7 +927,7 @@ public class BotPlusConfig {
     /** Menzil Kilidi: bant genisligi ve salinim. */
     @Configuration("botplus.combat.lock.width")
     public enum LockWidth {
-        NARROW(1.01, 1.04), MEDIUM(1.01, 1.08), WIDE(0.98, 1.10);
+        NARROW(1.01, 1.04), MEDIUM(1.01, 1.08), WIDE(1.00, 1.10); // 2.8.0: Genis de menzilin altina inmez
         public final double lo, hi;
 
         LockWidth(double lo, double hi) {
@@ -1120,6 +1136,14 @@ public class BotPlusConfig {
         public boolean CHASE_HOLD = true;
         /** 2.7.0 Klan uyelerine hic ates edilmez (PvP, Karsilik, Defense roket / mayin / zehir). */
         public boolean CLAN_SAFE = true;
+        /** 2.8.0 Dusman Radari (kod gorunumu; menu: BotPlus -> Dusman Radari). */
+        public Set<RadarOpt> RADAR = EnumSet.noneOf(RadarOpt.class);
+        public int RADAR_ENEMY_AVOID = 2000, RADAR_ENEMY_FLEE = 1500, RADAR_LOW_HP = 40;
+        public int TRAIN_SIZE = 4, TRAIN_NEAR = 600, TRAIN_AVOID = 3000, TRAIN_FLEE = 2500;
+
+        public boolean radar(RadarOpt o) {
+            return RADAR != null && RADAR.contains(o);
+        }
     }
 
     /** Kac Secenekleri: dusmandan portala kacarken portal secimi. */
@@ -1184,6 +1208,20 @@ public class BotPlusConfig {
     /** Gelismis Kacis (menu). */
     @Configuration("botplus.on_enemy.adv_opts")
     public enum AdvOpt { INSTANT_TURN, END_HOLD, CHASE_HOLD, AFTER_STAY, CORNER_GUARD }
+
+    /**
+     * 2.8.0 Onceden Kac (dusman ates etmeden): hangi durumda kacilir. Hicbiri secili degilse kapali. Onceden kacis
+     * her zaman haritada atlatmadir (portala gidilmez).
+     */
+    @Configuration("botplus.on_enemy.pre_when")
+    public enum PreWhen { APPROACH, LOW_HP_NEAR, KILLER, MULTI }
+
+    /**
+     * 2.8.0 Dusman Radari: dusman ates etmeden (Kac: kacis baslar, Kacin: oraya gidilmez, tersine gidilir / dolanilir).
+     * Sira menudeki sira. Onceden Kac'in eski secenekleri buraya tasindi (Yaklasan Dusmandan Kac = Dusmandan Kac).
+     */
+    @Configuration("botplus.radar.opts")
+    public enum RadarOpt { ENEMY_FLEE, ENEMY_AVOID, TRAIN_FLEE, TRAIN_AVOID, CROWD_FLEE, CROWD_AVOID, LOW_HP_FLEE, REMEMBERED_FLEE }
 
     /** Combat -> Menzil (tek liste). */
     @Configuration("botplus.combat.range_opts")

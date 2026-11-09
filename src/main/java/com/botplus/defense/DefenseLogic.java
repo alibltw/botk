@@ -39,6 +39,101 @@ public final class DefenseLogic {
 
     public DefenseLogic(Context context) {
         this.context = context;
+        // 2.8.0: kacis (Escape) EMP / Insta-Shield'i buradan basar: sira ve bekleme tek yerde.
+        context.empPress = this::pressEmp;
+        context.ishPress = this::pressIsh;
+    }
+
+    /** 2.8.0: EMP ile Insta-Shield arasinda en az bu kadar sure (ayni anda basilmaz, once EMP). */
+    private static final long PAIR_GAP_MS = 1000;
+    /** 2.8.0 Kritik HP: bu hizla bu kadar saniyede patlanacaksa Insta-Shield. */
+    private static final double CRIT_TTD_SEC = 2.0;
+    private static final long CRIT_WINDOW_MS = 1500;
+    /** 2.8.0 Buyuk vurus: kisa surede (BIG_HIT_MS) can + kalkanin bu orani gittiyse Insta-Shield. */
+    private static final double BIG_HIT_PCT = 0.25;
+    private static final long BIG_HIT_MS = 400;
+    /** 2.8.0: kacis / portal bekleme / tamir "su an suruyor" sayilma suresi. */
+    private static final long ACTIVE_MS = 1500;
+    private long empPressAt, ishPressAt;
+    /** Can + kalkan gecmisi {zaman, toplam}: Kritik HP / Buyuk vurus. */
+    private final java.util.ArrayDeque<double[]> totalHist = new java.util.ArrayDeque<>();
+
+    /** EMP bas (Defense kendi kosullari ya da kacis): Insta-Shield'den hemen sonra basilmaz. true: basildi. */
+    public boolean pressEmp(String why) {
+        BotPlusConfig.Protect c = context.config.PROTECT;
+        if (c == null || !c.ENABLED || !c.EMP_ON || loggingOut()) return false;
+        long now = Context.now();
+        if (now - ishPressAt < PAIR_GAP_MS) return false;
+        if (!use(SelectableItem.Special.EMP_01, "EMP", why, context.heroHp())) return false;
+        empPressAt = now;
+        context.empUsedAt = now;
+        return true;
+    }
+
+    /** Insta-Shield bas: EMP'den hemen sonra basilmaz. true: basildi. */
+    public boolean pressIsh(String why) {
+        BotPlusConfig.Protect c = context.config.PROTECT;
+        if (c == null || !c.ENABLED || !c.ISH_ON || loggingOut()) return false;
+        long now = Context.now();
+        if (now - empPressAt < PAIR_GAP_MS) return false;
+        if (!use(SelectableItem.Special.ISH_01, "INSTA-SHIELD", why, context.heroHp())) return false;
+        ishPressAt = now;
+        context.ishUsedAt = now;
+        return true;
+    }
+
+    /** Can + kalkan (0 bilinmiyor). */
+    private double total() {
+        try {
+            return context.hero.getHealth().getHp() + context.hero.getHealth().getShield();
+        } catch (RuntimeException e) {
+            return -1;
+        }
+    }
+
+    private double maxTotal() {
+        try {
+            return Math.max(1, context.hero.getHealth().getMaxHp() + context.hero.getHealth().getMaxShield());
+        } catch (RuntimeException e) {
+            return 1;
+        }
+    }
+
+    private void sampleTotal(long now) {
+        double t = total();
+        if (t < 0) return;
+        totalHist.addLast(new double[]{now, t});
+        while (!totalHist.isEmpty() && now - (long) totalHist.peekFirst()[0] > CRIT_WINDOW_MS) totalHist.pollFirst();
+    }
+
+    /** Kritik HP: son 1,5 sn'deki dusus hiziyla 2 sn icinde patlanacak mi. Nedeni ya da null. */
+    private String criticalHp(long now) {
+        double cur = total();
+        if (cur < 0 || totalHist.size() < 2) return null;
+        double max = 0, firstT = now;
+        for (double[] h : totalHist) {
+            if (h[1] > max) {
+                max = h[1];
+                firstT = h[0];
+            }
+        }
+        double drop = max - cur;
+        double sec = Math.max(0.2, (now - firstT) / 1000.0);
+        if (drop < maxTotal() * 0.05) return null; // kucuk dalgalanma sayilmaz
+        double rate = drop / sec;
+        double ttd = cur / rate;
+        return ttd <= CRIT_TTD_SEC ? "kritik HP: bu hizla " + String.format(java.util.Locale.ROOT, "%.1f", ttd) + " sn'de patlanir" : null;
+    }
+
+    /** Buyuk vurus: son 400 ms'de can + kalkanin %25'i gitti mi. Nedeni ya da null. */
+    private String bigHit(long now) {
+        double cur = total();
+        if (cur < 0) return null;
+        double max = -1;
+        for (double[] h : totalHist) if (now - (long) h[0] <= BIG_HIT_MS) max = Math.max(max, h[1]);
+        if (max < 0) return null;
+        double drop = max - cur;
+        return drop >= maxTotal() * BIG_HIT_PCT ? "buyuk vurus: " + Log.pct(drop / maxTotal()) + " gitti" : null;
     }
 
     public void tick(boolean active) {
@@ -59,30 +154,45 @@ public final class DefenseLogic {
         Npc npc = npcAttacker();
         boolean damaged = now - damageAt < DAMAGE_MS;
 
+        sampleTotal(now);
         if (c.EMP_ON) {
-            String why = reason("EMP", c.EMP_WHEN, c.EMP_HP, hp, damaged, enemy, npc);
+            java.util.Set<BotPlusConfig.EmpWhen> ew = c.EMP_WHEN;
+            boolean none = ew == null || ew.isEmpty();
+            // Eski dort secenek eski birlikte arama kuraliyla; hic secim yoksa "HP sinirin altinda" sayilir.
+            String why = reason("EMP", none || ew.contains(BotPlusConfig.EmpWhen.HP_LOW), !none && ew.contains(BotPlusConfig.EmpWhen.ENEMY),
+                    false, !none && ew.contains(BotPlusConfig.EmpWhen.ENEMY_FIRST), !none && ew.contains(BotPlusConfig.EmpWhen.ATTACKING),
+                    !none && !legacyEmp(ew), c.EMP_HP, hp, damaged, enemy, npc);
+            // 2.8.0 Hizli can kaybinda (tek basina yeterli).
+            if (why == null && !none && ew.contains(BotPlusConfig.EmpWhen.RAPID_LOSS) && context.rapidLossNow.getAsBoolean())
+                why = "hizli can kaybi";
             // EMP oyuncu kilitlerini kirar; NPC kilidi hemen geri gelir. Sadece bize ates eden oyuncu varken basilir
             // (eskiden NPC'ye de basiliyordu: 54 EMP'nin 39'u NPC'ye gitti, oyuncu gelince EMP beklemede kaliyordu).
-            // Yetenekleri Kacisa Sakla: kacis EMP'yi kullanacaksa (Kilit Kir ya da Atlatirken EMP) Defense ilk atista
-            // harcamaz; can sinirinin altindaysa yine basilir. 15:28: Defense ilk atista basti, kacista EMP beklemedeydi.
-            // Kacis EMP'yi sadece Hizla Atlat'ta (Atlatirken EMP) ya da Kilit Kir ile basar: o durumlar disinda saklanmaz.
-            boolean escEmp = (context.config.ON_ENEMY.MODE == BotPlusConfig.OnEnemyMode.OUTRUN && context.config.ON_ENEMY.EMP)
-                    || context.config.ON_ENEMY.START_OPTS.contains(BotPlusConfig.StartOpt.LOCK_BREAK);
-            boolean saveEmp = context.saveForEscape() && (why == null || !why.contains("can <=")) && escEmp
-                    && !(enemy != null && context.ignoredOwn(enemy));
-            if (why != null && saveEmp) {
-                Log.dEvery("empsave", 30_000, "KORUMA", "EMP kacisa saklaniyor (" + why + ")");
-            } else if (why != null && (enemy != null || playerAttacker() || context.pvpTarget.get() != null)) {
-                if (use(SelectableItem.Special.EMP_01, "EMP", why, hp)) {
-                    markFirst("EMP", enemy);
-                    context.empUsedAt = now;
-                }
+            // 2.8.0: "Kacisa sakla" kalkti; kacistaki EMP (Kacarken: ...) Escape'ten pressEmp ile.
+            if (why != null && (enemy != null || playerAttacker() || context.pvpTarget.get() != null)) {
+                if (pressEmp(why)) markFirst("EMP", enemy);
             } else if (why != null)
                 Log.dEvery("empnpc", 30_000, "KORUMA", "EMP basilmadi: bize ates eden oyuncu yok (" + why + ")");
         }
         if (c.ISH_ON) {
-            String why = reason("ISH", c.ISH_WHEN, c.ISH_HP, hp, damaged, enemy, npc);
-            if (why != null && use(SelectableItem.Special.ISH_01, "INSTA-SHIELD", why, hp)) markFirst("ISH", enemy);
+            java.util.Set<BotPlusConfig.IshWhen> iw = c.ISH_WHEN;
+            boolean none = iw == null || iw.isEmpty();
+            String why = reason("ISH", none || iw.contains(BotPlusConfig.IshWhen.HP_LOW), !none && iw.contains(BotPlusConfig.IshWhen.ENEMY),
+                    false, !none && iw.contains(BotPlusConfig.IshWhen.ENEMY_FIRST), !none && iw.contains(BotPlusConfig.IshWhen.ATTACKING),
+                    !none && !legacyIsh(iw), c.ISH_HP, hp, damaged, enemy, npc);
+            // 2.8.0 yeni secenekler: her biri tek basina yeterli.
+            boolean shot = damaged && (enemy != null || npc != null || playerAttacker());
+            if (why == null && !none) {
+                if (iw.contains(BotPlusConfig.IshWhen.CRITICAL_HP)) why = criticalHp(now);
+                if (why == null && iw.contains(BotPlusConfig.IshWhen.BIG_HIT)) why = bigHit(now);
+                if (why == null && shot && iw.contains(BotPlusConfig.IshWhen.ESC_FIRE) && now - context.escapeActiveAt < ACTIVE_MS)
+                    why = "kacarken ates altinda";
+                if (why == null && shot && iw.contains(BotPlusConfig.IshWhen.PORTAL_FIRE) && now - Context.portalWaitAt < ACTIVE_MS)
+                    why = "portalda beklerken ates altinda";
+                if (why == null && shot && iw.contains(BotPlusConfig.IshWhen.REPAIR_FIRE) && now - context.repairActiveAt < ACTIVE_MS)
+                    why = "tamirde ates altinda";
+            }
+            // Ayni anda basilmaz: EMP az once basildiysa pressIsh 1 sn bekler (sonraki tiklerde kosul suruyorsa basilir).
+            if (why != null && pressIsh(why)) markFirst("ISH", enemy);
         }
 
         counter(c, hp, enemy, now);
@@ -142,18 +252,40 @@ public final class DefenseLogic {
         firstDone.add(item + ":" + enemy.getId());
     }
 
+    /** HP Link (eski When listesi). */
     private String reason(String item, Set<BotPlusConfig.When> w, int limit, double hp, boolean damaged, Player enemy, Npc npc) {
+        return reason(item, w == null || w.isEmpty() || w.contains(BotPlusConfig.When.HP_LOW),
+                w != null && w.contains(BotPlusConfig.When.ENEMY), w != null && w.contains(BotPlusConfig.When.NPC),
+                w != null && w.contains(BotPlusConfig.When.ENEMY_FIRST), w != null && w.contains(BotPlusConfig.When.ATTACKING),
+                false, limit, hp, damaged, enemy, npc);
+    }
+
+    /** 2.8.0: EMP listesinde eski dort secenekten biri var mi (yoksa eski kural hic calismaz). */
+    private static boolean legacyEmp(Set<BotPlusConfig.EmpWhen> w) {
+        return w.contains(BotPlusConfig.EmpWhen.HP_LOW) || w.contains(BotPlusConfig.EmpWhen.ENEMY)
+                || w.contains(BotPlusConfig.EmpWhen.ENEMY_FIRST) || w.contains(BotPlusConfig.EmpWhen.ATTACKING);
+    }
+
+    private static boolean legacyIsh(Set<BotPlusConfig.IshWhen> w) {
+        return w.contains(BotPlusConfig.IshWhen.HP_LOW) || w.contains(BotPlusConfig.IshWhen.ENEMY)
+                || w.contains(BotPlusConfig.IshWhen.ENEMY_FIRST) || w.contains(BotPlusConfig.IshWhen.ATTACKING);
+    }
+
+    /**
+     * Eski "Ne Zaman" kurali (HP siniri + saldirgan birlikte). legacyOff: listede eski secenek yok (sadece 2.8.0
+     * secenekleri), eski kural calismaz.
+     */
+    private String reason(String item, boolean hpSel, boolean enemySel, boolean npcSel, boolean firstSel, boolean attackingSel,
+                          boolean legacyOff, int limit, double hp, boolean damaged, Player enemy, Npc npc) {
+        if (legacyOff) return null;
         // Dusman Saldirinca: can sinirina bakilmadan, dusman ilk ates ettigi an.
-        if (w != null && w.contains(BotPlusConfig.When.ENEMY_FIRST) && enemy != null && !firstDone.contains(item + ":" + enemy.getId()))
+        if (firstSel && enemy != null && !firstDone.contains(item + ":" + enemy.getId()))
             return "dusman saldirdi: " + Log.ship(enemy);
         // Dusmana Saldirinca: Saldir (PvP) isi suruyor.
-        if (w != null && w.contains(BotPlusConfig.When.ATTACKING)) {
+        if (attackingSel) {
             Player t = context.pvpTarget.get();
             if (t != null) return "dusmana saldiriliyor: " + Log.ship(t);
         }
-        boolean hpSel = w == null || w.isEmpty() || w.contains(BotPlusConfig.When.HP_LOW);
-        boolean enemySel = w != null && w.contains(BotPlusConfig.When.ENEMY);
-        boolean npcSel = w != null && w.contains(BotPlusConfig.When.NPC);
         boolean hpLow = hp <= limit / 100.0;
         String attacker = enemySel && enemy != null ? "oyuncu saldiriyor: " + Log.ship(enemy)
                 : npcSel && npc != null ? "NPC saldiriyor: " + Log.name(npc) : null;

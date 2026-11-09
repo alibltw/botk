@@ -45,13 +45,31 @@ public class Combat implements Configurable<Combat.Config>, eu.darkbot.api.exten
         @Option("botplus.combat.full")
         public boolean FULL = true;
 
+        /** 2.8.0: Liman ve Yarim Ay menude yok (eski kayit okunur, migrate28 ile aktarilir). */
         @Option("botplus.combat.style")
-        @Dropdown
+        @Dropdown(options = StyleOptions.class)
         public BotPlusConfig.CombatStyle STYLE = BotPlusConfig.CombatStyle.ORBIT;
 
+        /** 2.8.0 Portal Tarafinda Kal (eski Liman tarzi): her tarzda yay / konum NPC'nin atlanabilir portal tarafinda. */
+        @Option("botplus.combat.portal_side")
+        public boolean PORTAL_SIDE = false;
+
+        /** 2.8.0 Dusmandan Uzak Tarafta Kal: haritada dusman varken NPC gemi ile dusman arasinda kalir. */
+        @Option("botplus.combat.enemy_side")
+        public boolean ENEMY_SIDE = false;
+
+        /** 2.8.0 Akilli Menzil: tum tarzlarda tablo menzili yerine onerilen menzil (tabloya yazilmaz). */
+        @Option("botplus.combat.smart_range")
+        public boolean SMART_RANGE = false;
+
+        /** 2.8.0: Mizrak ve Onune Gec menude yok (Mizrak -> Frenli Giris, Onune Gec -> asagidaki tik). */
         @Option("botplus.combat.first_hit")
-        @Dropdown
+        @Dropdown(options = FirstHitOptions.class)
         public BotPlusConfig.FirstHit FIRST_HIT = BotPlusConfig.FirstHit.NORMAL;
+
+        /** 2.8.0 Onune Gec: hareket eden NPC'ye hangi giris secili olursa olsun once yolunun onunden girilir. */
+        @Option("botplus.combat.intercept")
+        public boolean INTERCEPT = false;
 
         /** Kartal Dalisi bu canin altinda (ya da yaninda baska saldirgan NPC varken) yapilmaz, normal giris. */
         @Option("botplus.combat.eagle_min_hp")
@@ -115,6 +133,26 @@ public class Combat implements Configurable<Combat.Config>, eu.darkbot.api.exten
         @Option.Ignore
         public boolean MIGRATED_27 = false;
 
+        @Option.Ignore
+        public boolean MIGRATED_28 = false;
+
+        /** 2.8.0 aktarma (bir kez): Liman -> Yorunge + Portal Tarafinda Kal, Yarim Ay -> Akilli Konum, Mizrak -> Frenli
+         * Giris, Onune Gec -> Normal + Onune Gec tiki. true: aktarildi, kaydedilmeli. */
+        public boolean migrate28() {
+            if (MIGRATED_28) return false;
+            if (STYLE == BotPlusConfig.CombatStyle.HARBOR) {
+                STYLE = BotPlusConfig.CombatStyle.ORBIT;
+                PORTAL_SIDE = true;
+            } else if (STYLE == BotPlusConfig.CombatStyle.CRESCENT) STYLE = BotPlusConfig.CombatStyle.SMART_SPOT;
+            if (FIRST_HIT == BotPlusConfig.FirstHit.LANCE) FIRST_HIT = BotPlusConfig.FirstHit.BRAKE;
+            else if (FIRST_HIT == BotPlusConfig.FirstHit.INTERCEPT) {
+                FIRST_HIT = BotPlusConfig.FirstHit.NORMAL;
+                INTERCEPT = true;
+            }
+            MIGRATED_28 = true;
+            return true;
+        }
+
         /** 2.7.0 aktarma (setConfig'te bir kez). true: aktarildi, kaydedilmeli. */
         public boolean migrate27() {
             if (MIGRATED_27) return false;
@@ -132,6 +170,63 @@ public class Combat implements Configurable<Combat.Config>, eu.darkbot.api.exten
             MENZIL = m;
             MIGRATED_27 = true;
             return true;
+        }
+    }
+
+    /** 2.8.0: menude gosterilmeyen (kaldirilan) secenekleri gizleyen liste; yazilar dil dosyasindan. */
+    abstract static class HiddenEnumOptions<E extends Enum<E>> implements Dropdown.Options<E> {
+        private final eu.darkbot.api.managers.I18nAPI i18n;
+        private final eu.darkbot.api.extensions.PluginInfo info;
+        private final java.util.List<E> list;
+        private final String base;
+
+        HiddenEnumOptions(eu.darkbot.api.PluginAPI api, Class<E> cl, String base, java.util.Set<E> hidden) {
+            this.i18n = api.requireAPI(eu.darkbot.api.managers.I18nAPI.class);
+            eu.darkbot.api.extensions.PluginInfo pi = null;
+            try {
+                eu.darkbot.api.extensions.FeatureInfo<?> fi = api.requireAPI(eu.darkbot.api.managers.ExtensionsAPI.class).getFeatureInfo(Combat.class);
+                pi = fi == null ? null : fi.getPluginInfo();
+            } catch (RuntimeException ignored) {
+            }
+            this.info = pi;
+            this.base = base;
+            java.util.List<E> l = new java.util.ArrayList<>();
+            for (E e : cl.getEnumConstants()) if (!hidden.contains(e)) l.add(e);
+            this.list = l;
+        }
+
+        @Override
+        public java.util.Collection<E> options() {
+            return list;
+        }
+
+        @Override
+        public String getText(E option) {
+            if (option == null) return "";
+            String n = option.name().toLowerCase(java.util.Locale.ROOT);
+            return i18n.getOrDefault(info, base + "." + n, n);
+        }
+
+        @Override
+        public String getTooltip(E option) {
+            if (option == null) return null;
+            return i18n.getOrDefault(info, base + "." + option.name().toLowerCase(java.util.Locale.ROOT) + ".desc", null);
+        }
+    }
+
+    /** Saldiri Tarzi listesi: Liman ve Yarim Ay gizli. */
+    public static class StyleOptions extends HiddenEnumOptions<BotPlusConfig.CombatStyle> {
+        public StyleOptions(eu.darkbot.api.PluginAPI api) {
+            super(api, BotPlusConfig.CombatStyle.class, "botplus.combat.style",
+                    EnumSet.of(BotPlusConfig.CombatStyle.HARBOR, BotPlusConfig.CombatStyle.CRESCENT));
+        }
+    }
+
+    /** Ilk Vurus listesi: Mizrak ve Onune Gec gizli. */
+    public static class FirstHitOptions extends HiddenEnumOptions<BotPlusConfig.FirstHit> {
+        public FirstHitOptions(eu.darkbot.api.PluginAPI api) {
+            super(api, BotPlusConfig.FirstHit.class, "botplus.combat.first_hit",
+                    EnumSet.of(BotPlusConfig.FirstHit.LANCE, BotPlusConfig.FirstHit.INTERCEPT));
         }
     }
 

@@ -33,6 +33,14 @@ public class CoreConfig extends BotPlusConfig {
     @Dropdown(multi = true)
     public Set<MoveOpt> HAREKET_SET = EnumSet.of(MoveOpt.PASS_PASSIVE);
 
+    /** 2.8.0 Dusman Radari: dusman / tren / kalabalik ates etmeden; Onceden Kac ve Dusmani Hatirla buraya tasindi. */
+    @Option("botplus.radar")
+    public RadarSet RADAR = new RadarSet();
+
+    /** 2.8.0: Onceden Kac / Dusmani Hatirla Dusman Saldirinca'dan Radar'a bir kez aktarildi mi. */
+    @Option.Ignore
+    public boolean MIGRATED_RADAR = false;
+
     /** 2.7.0: Kutu tek liste. */
     @Option("botplus.box")
     @Dropdown(multi = true)
@@ -204,6 +212,10 @@ public class CoreConfig extends BotPlusConfig {
         @Dropdown(multi = true)
         public Set<AdvOpt> GELISMIS_SET = EnumSet.allOf(AdvOpt.class);
 
+        /** 2.8.0 (gelistirme surumu) Onceden Kac: menude yok, Dusman Radari'na aktarilir. */
+        @Option.Ignore
+        public Set<PreWhen> ONCEDEN = EnumSet.of(PreWhen.APPROACH);
+
         // 2.7.0 oncesi alanlar: menude yok, bir kez yeni listelere aktarilir.
         @Option.Ignore
         public int HP = 30;
@@ -221,8 +233,7 @@ public class CoreConfig extends BotPlusConfig {
         public Set<StartOpt> BASLANGIC = EnumSet.of(StartOpt.INSTANT_TURN);
 
         /** Dusmani Hatirla (2.1.0'da Defense'ten tasindi): hatirlanan oyuncu gorulunce uzaklasilir, yaninda NPC secilmez. */
-        @Option("botplus.on_enemy.remember")
-        @Dropdown(multi = true)
+        @Option.Ignore // 2.8.0: Dusman Radari'na tasindi
         public Set<BotPlusConfig.RememberWho> HATIRLA = EnumSet.of(BotPlusConfig.RememberWho.KILLER);
 
         /** 2.4.0 oncesi tek secim (Kapali / Seni Patlatan / Patlatan + Saldiran): bir kez HATIRLA'ya tasinir. */
@@ -230,22 +241,107 @@ public class CoreConfig extends BotPlusConfig {
         public BotPlusConfig.RememberMode REMEMBER = BotPlusConfig.RememberMode.KILLER;
 
         /** 0: dusman sirketten kimse hatirlanmaz (Hatirla secili olsa da). */
-        @Option("botplus.on_enemy.remember_min")
-        @Number(min = 0, max = 60, step = 1)
+        @Option.Ignore // 2.8.0: Dusman Radari'na tasindi
         public int REMEMBER_MIN = 10;
 
         /** Kendi sirketinden saldiran ayri sure hatirlanir. */
         /** 0: kendi sirketinden kimse hatirlanmaz. */
-        @Option("botplus.on_enemy.remember_own_min")
-        @Number(min = 0, max = 60, step = 1)
+        @Option.Ignore // 2.8.0: Dusman Radari'na tasindi
         public int REMEMBER_OWN_MIN = 1;
 
         /**
          * Saldir seciliyken (PvP Plus acik) hatirlanan oyuncudan kacilmaz, yanindaki NPC / bulucu sinyali yasaklanmaz:
          * karsilik PvP'ye birakilir. Push Korumasi'nin olme sinirindaki oyuncudan yine kacilir.
          */
+        @Option.Ignore // 2.8.0: Dusman Radari'na tasindi
+        public boolean REMEMBER_ATTACK_STAY = true;
+    }
+
+    /** 2.8.0 Dusman Radari. */
+    public static class RadarSet {
+        /** Kac / Kacin secenekleri (hicbiri secili degilse radar kapali; Dusmani Hatirla yine calisir). */
+        @Option("botplus.radar.opts")
+        @Dropdown(multi = true)
+        public Set<RadarOpt> SECENEK = EnumSet.noneOf(RadarOpt.class);
+
+        @Option("botplus.radar.enemy_avoid")
+        @Number(min = 500, max = 8000, step = 100)
+        public int KACINMA = 2000;
+
+        @Option("botplus.radar.enemy_flee")
+        @Number(min = 500, max = 5000, step = 100)
+        public int KACMA = 1500;
+
+        @Option("botplus.radar.low_hp")
+        @Number(min = 10, max = 90, step = 5)
+        public int HP = 40;
+
+        @Option("botplus.radar.train")
+        public TrainSet TREN = new TrainSet();
+
+        @Option("botplus.on_enemy.remember")
+        @Dropdown(multi = true)
+        public Set<BotPlusConfig.RememberWho> HATIRLA = EnumSet.of(BotPlusConfig.RememberWho.KILLER);
+
+        @Option("botplus.on_enemy.remember_min")
+        @Number(min = 0, max = 60, step = 1)
+        public int REMEMBER_MIN = 10;
+
+        @Option("botplus.on_enemy.remember_own_min")
+        @Number(min = 0, max = 60, step = 1)
+        public int REMEMBER_OWN_MIN = 1;
+
         @Option("botplus.on_enemy.remember_attack_stay")
         public boolean REMEMBER_ATTACK_STAY = true;
+    }
+
+    /** 2.8.0 Tren Ayarlari (Dusman Radari altinda, acilir grup). */
+    public static class TrainSet {
+        @Option("botplus.radar.train.size")
+        @Number(min = 3, max = 8, step = 1)
+        public int KISI = 4;
+
+        @Option("botplus.radar.train.near")
+        @Number(min = 300, max = 1500, step = 50)
+        public int YAKIN = 600;
+
+        @Option("botplus.radar.train.avoid")
+        @Number(min = 1000, max = 8000, step = 100)
+        public int KACINMA = 3000;
+
+        @Option("botplus.radar.train.flee")
+        @Number(min = 1000, max = 6000, step = 100)
+        public int KACMA = 2500;
+    }
+
+    /**
+     * 2.8.0: Onceden Kac ve Dusmani Hatirla (Dusman Saldirinca) -> Dusman Radari (bir kez). Onceden Kac eskiden sadece
+     * Kac / Hizinla Atlat secilikken calisiyordu; radar moddan bagimsiz oldugu icin secimler sadece o modlarda aktarilir.
+     */
+    public boolean migrateRadar() {
+        if (MIGRATED_RADAR) return false;
+        fixCore();
+        RadarSet r = RADAR;
+        OnEnemySet d = DUSMAN;
+        r.HATIRLA = EnumSet.noneOf(BotPlusConfig.RememberWho.class);
+        if (d.HATIRLA != null) for (BotPlusConfig.RememberWho x : d.HATIRLA) if (x != null) r.HATIRLA.add(x);
+        r.REMEMBER_MIN = d.REMEMBER_MIN;
+        r.REMEMBER_OWN_MIN = d.REMEMBER_OWN_MIN;
+        r.REMEMBER_ATTACK_STAY = d.REMEMBER_ATTACK_STAY;
+        Set<RadarOpt> o = EnumSet.noneOf(RadarOpt.class);
+        boolean modeOk = d.MODE == BotPlusConfig.OnEnemyMode.OUTRUN || d.MODE == BotPlusConfig.OnEnemyMode.ESCAPE;
+        if (modeOk && d.ONCEDEN != null)
+            for (PreWhen w : d.ONCEDEN) {
+                if (w == PreWhen.APPROACH) o.add(RadarOpt.ENEMY_FLEE);
+                else if (w == PreWhen.LOW_HP_NEAR) o.add(RadarOpt.LOW_HP_FLEE);
+                else if (w == PreWhen.KILLER) o.add(RadarOpt.REMEMBERED_FLEE);
+                else if (w == PreWhen.MULTI) o.add(RadarOpt.CROWD_FLEE);
+            }
+        r.SECENEK = o;
+        MIGRATED_RADAR = true;
+        Log.i("AYARLAR", "2.8.0: Onceden Kac / Dusmani Hatirla -> Dusman Radari " + o + " hatirla " + r.HATIRLA
+                + " " + r.REMEMBER_MIN + "/" + r.REMEMBER_OWN_MIN + " dk");
+        return true;
     }
 
     /** Gelismis Kacis: hepsi varsayilan acik. */
@@ -450,6 +546,21 @@ public class CoreConfig extends BotPlusConfig {
         if (DUSMAN.REMEMBER == null) DUSMAN.REMEMBER = BotPlusConfig.RememberMode.KILLER;
         if (DUSMAN.HATIRLA == null) DUSMAN.HATIRLA = EnumSet.of(BotPlusConfig.RememberWho.KILLER);
         DUSMAN.HATIRLA.remove(null);
+        if (RADAR == null) RADAR = new RadarSet();
+        if (RADAR.TREN == null) RADAR.TREN = new TrainSet();
+        if (RADAR.SECENEK == null) RADAR.SECENEK = EnumSet.noneOf(RadarOpt.class);
+        RADAR.SECENEK.remove(null);
+        if (RADAR.HATIRLA == null) RADAR.HATIRLA = EnumSet.of(BotPlusConfig.RememberWho.KILLER);
+        RADAR.HATIRLA.remove(null);
+        RADAR.KACINMA = Math.max(500, Math.min(8000, RADAR.KACINMA));
+        RADAR.KACMA = Math.max(500, Math.min(5000, RADAR.KACMA));
+        RADAR.HP = Math.max(10, Math.min(90, RADAR.HP));
+        RADAR.REMEMBER_MIN = Math.max(0, Math.min(60, RADAR.REMEMBER_MIN));
+        RADAR.REMEMBER_OWN_MIN = Math.max(0, Math.min(60, RADAR.REMEMBER_OWN_MIN));
+        RADAR.TREN.KISI = Math.max(3, Math.min(8, RADAR.TREN.KISI));
+        RADAR.TREN.YAKIN = Math.max(300, Math.min(1500, RADAR.TREN.YAKIN));
+        RADAR.TREN.KACINMA = Math.max(1000, Math.min(8000, RADAR.TREN.KACINMA));
+        RADAR.TREN.KACMA = Math.max(1000, Math.min(6000, RADAR.TREN.KACMA));
         if (HP_BEKLE == null) HP_BEKLE = new HpWaitSet();
         if (HP_BEKLE.WHICH == null) HP_BEKLE.WHICH = HpWaitWhich.FLAGGED;
         if (HP_BEKLE.MODE == null) HP_BEKLE.MODE = HpWaitMode.NEAR;

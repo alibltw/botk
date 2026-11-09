@@ -92,10 +92,10 @@ public final class Settings {
     }
 
     /** CoreConfig'in kendi (yeni menu) alanlari: eski ayar karsilastirmasinda ve ayar dokumunde kullanilir. */
-    private static final String[] CORE_KEYS = {"GENEL", "HAREKET_SET", "KUTU_SET", "DUSMAN", "PET_AYAR", "KAYIT"};
+    private static final String[] CORE_KEYS = {"GENEL", "HAREKET_SET", "RADAR", "KUTU_SET", "DUSMAN", "PET_AYAR", "KAYIT"};
     private static final java.util.Set<String> CORE_ONLY = new java.util.HashSet<>(java.util.Arrays.asList(
             "GENEL", "HAREKET", "DOLASMA", "KUTU", "DUSMAN", "HP_BEKLE", "PET_AYAR", "YENILEME", "KAYIT",
-            "HAREKET_SET", "KUTU_SET", "MIGRATED_27",
+            "HAREKET_SET", "KUTU_SET", "MIGRATED_27", "RADAR", "MIGRATED_RADAR",
             "MIGRATED", "MIGRATED_SUBS", "MIGRATED_ENABLED", "ASIL_MENZIL", "YAZILAN_MENZIL"));
 
     /**
@@ -225,10 +225,13 @@ public final class Settings {
         boolean ch = false;
         CoreConfig.OnEnemySet ds = core.DUSMAN;
         if (combat != null && combat.config.migrate27()) ch = true;
+        if (combat != null && combat.config.migrate28()) ch = true; // 2.8.0 tarz / ilk vurus aktarma
+        if (core.migrateRadar()) ch = true; // 2.8.0 Onceden Kac / Dusmani Hatirla -> Dusman Radari
         if (defense != null) {
             boolean emp = ds.ATLAT != null && ds.ATLAT.EMP;
             boolean late = ds.ATLAT != null && ds.ATLAT.SECENEK != null && ds.ATLAT.SECENEK.contains(BotPlusConfig.OutrunOpt.LATE_SPEED);
             if (defense.config.migrate27(emp, late)) ch = true;
+            if (defense.config.migrate28()) ch = true; // 2.8.0 EMP / Insta-Shield Ne Zaman listeleri
         }
         if (pvp != null) {
             boolean same = push == null || push.config == null || push.config.SAME_CLAN;
@@ -365,8 +368,18 @@ public final class Settings {
         vc.ENABLED = cb != null && cb.FULL;
         vc.FIGHT_MIN_HP = roam ? hw0.HP : 0;
         if (cb != null) {
-            vc.STYLE = cb.STYLE != null ? cb.STYLE : BotPlusConfig.CombatStyle.ORBIT;
-            vc.FIRST_HIT = cb.FIRST_HIT != null ? cb.FIRST_HIT : BotPlusConfig.FirstHit.NORMAL;
+            // 2.8.0: kaldirilan tarz / girisler aktarma calismadan da karsiligina cevrilir (Liman -> Yorunge + Portal
+            // Tarafinda Kal, Yarim Ay -> Akilli Konum, Mizrak -> Frenli Giris, Onune Gec -> Normal + Onune Gec tiki).
+            BotPlusConfig.CombatStyle st0 = cb.STYLE != null ? cb.STYLE : BotPlusConfig.CombatStyle.ORBIT;
+            vc.PORTAL_SIDE = cb.PORTAL_SIDE || st0 == BotPlusConfig.CombatStyle.HARBOR;
+            vc.STYLE = st0 == BotPlusConfig.CombatStyle.HARBOR ? BotPlusConfig.CombatStyle.ORBIT
+                    : st0 == BotPlusConfig.CombatStyle.CRESCENT ? BotPlusConfig.CombatStyle.SMART_SPOT : st0;
+            BotPlusConfig.FirstHit fh0 = cb.FIRST_HIT != null ? cb.FIRST_HIT : BotPlusConfig.FirstHit.NORMAL;
+            vc.INTERCEPT = cb.INTERCEPT || fh0 == BotPlusConfig.FirstHit.INTERCEPT;
+            vc.FIRST_HIT = fh0 == BotPlusConfig.FirstHit.LANCE ? BotPlusConfig.FirstHit.BRAKE
+                    : fh0 == BotPlusConfig.FirstHit.INTERCEPT ? BotPlusConfig.FirstHit.NORMAL : fh0;
+            vc.ENEMY_SIDE = cb.ENEMY_SIDE;
+            vc.SMART_RANGE = cb.SMART_RANGE;
             vc.EAGLE_MIN_HP = cb.EAGLE_MIN_HP;
             // 2.6.0: tarzlarin ince ayarlari (Yorunge, Sarkac, Dalga, Liman, Yarim Ay, Menzil Kilidi) menude yok: her
             // zaman varsayilan degerler kullanilir (eski kayitli degerler okunmaz).
@@ -384,6 +397,7 @@ public final class Settings {
             vc.NO_HIT_MIN = rg.contains(BotPlusConfig.RangeOpt.NO_HIT_SHRINK) ? 60 : 100;
         } else {
             vc.CHASE = false;
+            vc.PORTAL_SIDE = vc.ENEMY_SIDE = vc.INTERCEPT = vc.SMART_RANGE = false;
         }
 
         BotPlusConfig.Pet vp = v.PET;
@@ -424,12 +438,18 @@ public final class Settings {
         if (df != null) {
             vd.EMP_ON = df.EMP != null && df.EMP.ON;
             if (df.EMP != null) {
-                vd.EMP_WHEN = df.EMP.WHEN;
+                // 2.8.0: okunamayan eski deger (bos) atilir.
+                java.util.Set<BotPlusConfig.EmpWhen> ew = java.util.EnumSet.noneOf(BotPlusConfig.EmpWhen.class);
+                if (df.EMP.WHEN != null) for (BotPlusConfig.EmpWhen x : df.EMP.WHEN) if (x != null) ew.add(x);
+                vd.EMP_WHEN = ew;
                 vd.EMP_HP = df.EMP.HP;
+                vd.EMP_CATCH_DIST = df.EMP.CATCH_DIST;
             }
             vd.ISH_ON = df.ISH != null && df.ISH.ON;
             if (df.ISH != null) {
-                vd.ISH_WHEN = df.ISH.WHEN;
+                java.util.Set<BotPlusConfig.IshWhen> iw = java.util.EnumSet.noneOf(BotPlusConfig.IshWhen.class);
+                if (df.ISH.WHEN != null) for (BotPlusConfig.IshWhen x : df.ISH.WHEN) if (x != null) iw.add(x);
+                vd.ISH_WHEN = iw;
                 vd.ISH_HP = df.ISH.HP;
             }
             if (df.HP_LINK != null) vd.HP_LINK = df.HP_LINK;
@@ -481,8 +501,8 @@ public final class Settings {
         oe.CALM_SEC = ds.SAKIN;
         java.util.Set<BotPlusConfig.AtlatOpt> at = ds.ATLAT_SET;
         oe.FASTER_PORTAL = at.contains(BotPlusConfig.AtlatOpt.FASTER);
-        // Atlatirken EMP Bas -> Savunma -> EMP -> "Kacarken kilit suruyorsa" (2000 yol sabit).
-        oe.EMP = df != null && df.EMP != null && df.EMP.ON && df.EMP.KACARKEN;
+        // 2.8.0: kacarken EMP artik Savunma -> EMP -> Ne Zaman listesinde (Kacarken: ... secenekleri); Escape oradan okur.
+        oe.EMP = false;
         oe.EMP_DIST = 2000;
         java.util.Set<BotPlusConfig.PortalOpt> po = ds.PORTAL_SET;
         java.util.Set<BotPlusConfig.EscapeOpt> eo = java.util.EnumSet.noneOf(BotPlusConfig.EscapeOpt.class);
@@ -503,7 +523,8 @@ public final class Settings {
         oe.START_OPTS = ad.contains(BotPlusConfig.AdvOpt.INSTANT_TURN) ? java.util.EnumSet.of(BotPlusConfig.StartOpt.INSTANT_TURN)
                 : java.util.EnumSet.noneOf(BotPlusConfig.StartOpt.class);
         oe.OWN_MODE = ds.OWN == null ? BotPlusConfig.OwnMode.SAME : ds.OWN;
-        oe.ATTACK_STAY = ds.REMEMBER_ATTACK_STAY;
+        CoreConfig.RadarSet rd = c.RADAR;
+        oe.ATTACK_STAY = rd.REMEMBER_ATTACK_STAY;
         CoreConfig.EscapePlusSet ep = VIEW_PLUS;
         ep.RAPID_LOSS = ds.HIZLI == BotPlusConfig.RapidMode.OFF ? 0 : 50; // 2 sn'de %50 (sabit)
         ep.SMART = false;          // Akilli Kacis kaldirildi
@@ -521,6 +542,17 @@ public final class Settings {
         oe.PLUS = ep;
         oe.RAPID_MODE = ds.HIZLI;
         oe.CHASE_HOLD = ad.contains(BotPlusConfig.AdvOpt.CHASE_HOLD);
+        // 2.8.0 Dusman Radari (bos: kapali).
+        java.util.Set<BotPlusConfig.RadarOpt> ro = java.util.EnumSet.noneOf(BotPlusConfig.RadarOpt.class);
+        if (rd.SECENEK != null) for (BotPlusConfig.RadarOpt x : rd.SECENEK) if (x != null) ro.add(x);
+        oe.RADAR = ro;
+        oe.RADAR_ENEMY_AVOID = rd.KACINMA;
+        oe.RADAR_ENEMY_FLEE = rd.KACMA;
+        oe.RADAR_LOW_HP = rd.HP;
+        oe.TRAIN_SIZE = rd.TREN.KISI;
+        oe.TRAIN_NEAR = rd.TREN.YAKIN;
+        oe.TRAIN_AVOID = rd.TREN.KACINMA;
+        oe.TRAIN_FLEE = rd.TREN.KACMA;
         // PvP ve Push Korumasi: kendi alt eklentileri (kapaliysa Saldir Kac gibi, push kontrolu yok).
         oe.PVP = com.botplus.pvp.Pvp.view(pvp);
         oe.PVP_ON = pvp != null;
@@ -531,10 +563,10 @@ public final class Settings {
         oe.PUSH.SAME_CLAN = oe.CLAN_SAFE;
         // Dusmani Hatirla: BotPlus menusunden (Defense kapali olsa da calisir).
         // Hicbiri secili degilse hatirlama kapali; "Gemine Saldiran" tek basina da patlatani hatirlar (saldiran zaten).
-        java.util.Set<BotPlusConfig.RememberWho> hw = c.DUSMAN.HATIRLA;
+        java.util.Set<BotPlusConfig.RememberWho> hw = rd.HATIRLA;
         VIEW_KILLER.ENABLED = hw != null && !hw.isEmpty();
-        VIEW_KILLER.MINUTES = c.DUSMAN.REMEMBER_MIN;
-        VIEW_KILLER.OWN_MINUTES = c.DUSMAN.REMEMBER_OWN_MIN;
+        VIEW_KILLER.MINUTES = rd.REMEMBER_MIN;
+        VIEW_KILLER.OWN_MINUTES = rd.REMEMBER_OWN_MIN;
         vd.KILLER = VIEW_KILLER;
         v.REMEMBER_ATTACKERS = hw != null && hw.contains(BotPlusConfig.RememberWho.ATTACKER);
         v.REMEMBER_KILLERS = hw != null && hw.contains(BotPlusConfig.RememberWho.KILLER);

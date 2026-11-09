@@ -35,6 +35,22 @@ public final class CombatJob implements PlusModule.Job {
 
     public CombatJob(CombatLogic cp) {
         this.cp = cp;
+        this.clawHit = cp.clawHit;
+        this.clawSince = cp.clawSince;
+        this.clawReleased = cp.clawReleased;
+        // 2.8.0: harita degistiyse eski haritanin bayraklari gecersiz.
+        int map;
+        try {
+            map = cp.context.star.getCurrentMap() == null ? -1 : cp.context.star.getCurrentMap().getId();
+        } catch (RuntimeException e) {
+            map = -1;
+        }
+        if (map != cp.clawMap) {
+            cp.clawMap = map;
+            cp.clawHit.clear();
+            cp.clawSince.clear();
+            cp.clawReleased.clear();
+        }
         cp.active = this;
         Log.i("COMBAT", "tam kontrol basladi | " + cp.context.dangerInfo(cp.context.hero));
     }
@@ -308,6 +324,9 @@ public final class CombatJob implements PlusModule.Job {
         lockCenter = Double.NaN;
         lockShift = 0;
         lockLastRate = -1;
+        lockCycle.reset(); // 2.8.0: her yeni NPC'de en yakin yandan baslanir
+        shuttleCycle.reset();
+        shuttleCenter = Double.NaN;
         diveStage = 0;
         entryFh = BotPlusConfig.FirstHit.NORMAL;
         pendIn = true;
@@ -323,9 +342,10 @@ public final class CombatJob implements PlusModule.Job {
         lastShotAt = 0;
         lastHitAt = 0;
         attackCfg = false;
-        localScale = cp.scale.getOrDefault(npcName, 1.0);
+        // 2.8.0: "menzil disi" ile dusen saldiri mesafesi kaldirildi (her hedef %100; oneri ayri: suggested()).
+        localScale = 1;
         hitScale = 1;
-        scaleEvidence = cp.scale.containsKey(npcName);
+        scaleEvidence = false;
         npcRate.reset();
         safeRate.reset();
         // hedefe ozel durum: menzilden cikis, siyrilma, can olcumu, ates bekcisi, menzil disi sayaci
@@ -376,8 +396,7 @@ public final class CombatJob implements PlusModule.Job {
         if (Objects.equals(cp.context.attack.getTarget(), n)) cp.context.attack.setTarget(null);
         cp.context.attack.setTarget(n);
         Log.i("COMBAT", "HEDEF " + Log.npc(n) + " (" + why + ") uzaklik " + (int) cp.context.hero.distanceTo(n) + " menzil "
-                + (int) n.getInfo().getRadius() + (localScale < 1 ? " (saldiri mesafesi %" + Math.round(localScale * 100) + ")" : "")
-                + " | " + cp.context.dangerInfo(cp.context.hero));
+                + (int) n.getInfo().getRadius() + rangeNote(n) + " | " + cp.context.dangerInfo(cp.context.hero));
     }
 
     void dropTarget(String why) {
@@ -938,7 +957,9 @@ public final class CombatJob implements PlusModule.Job {
                 : d > Math.max(radius, phase == CombatLogic.Phase.FIRST_HIT ? firstHitRadius(n, false) : 0) * 1.3 && !stepOutActive(now)) {
             // Histerezis: yaya 1,15R icinde girilir, 1,3R disinda cikilir (sinirda her tik gidip gelmez).
             if (phase != CombatLogic.Phase.APPROACH) phase(CombatLogic.Phase.APPROACH, "menzil disi " + (int) d + " > " + (int) radius);
-            Location vp = chase || fleeing ? null : vortexPoint(n, predicted, radius);
+            // 2.8.0 Onune Gec (her girisin altinda tik): hareket eden NPC'ye once yolunun onunden girilir.
+            Location vp = chase || fleeing || firstHitLogged || !cp.context.config.COMBAT.INTERCEPT ? null : interceptPoint(n, predicted, d, radius);
+            if (vp == null && !chase && !fleeing) vp = vortexPoint(n, predicted, radius);
             if (vp == null && !chase && !fleeing) vp = entryApproach(n, predicted, d, radius);
             p = vp != null ? vp : chase || fleeing ? flankPoint(n, predicted, radius) : approachPoint(n, predicted, radius);
             if (d > radius * 1.3) { // yaklasirken menzilin 1,3 katina kadar yoldaki liste disi NPC'lerden kacinilir (eskiden 1500'de kapaniyordu)
@@ -1053,7 +1074,7 @@ public final class CombatJob implements PlusModule.Job {
 
         if (Log.due("kesimstat" + npcId, 3000))
             Log.i("COMBAT", Log.npc(n) + " " + phaseName() + " | uzaklik " + (int) d
-                    + " menzil " + (int) tableR + (localScale < 1 ? " (saldiri mesafesi " + (int) radius + ")" : "")
+                    + " menzil " + (int) tableR + rangeNote(n) + (radius < tableR - 1 ? " (saldiri mesafesi " + (int) radius + ")" : "")
                     + " | " + cp.targeting.fleeInfo() + (n.getDestination().isPresent() ? " hedefi " + Log.loc(n.getDestination().get()) : "")
                     + " | NPC hasar alimi " + (int) npcRate.perSec() + "/sn, gemi " + (int) heroRate.perSec() + "/sn"
                     + " | gemi " + Log.pct(cp.context.heroHp()) + " | " + (run ? "hiz" : "saldiri") + " konfig");
@@ -1069,11 +1090,34 @@ public final class CombatJob implements PlusModule.Job {
         return Math.min(tableRadius(n), capRadius(n));
     }
 
-    /** Tablodaki menzil (DarkBot eklemeleriyle: AGGRESSIVE_FOLLOW, Zephyr / Hecate). */
+    /**
+     * Tablodaki menzil (DarkBot eklemeleriyle: AGGRESSIVE_FOLLOW, Zephyr / Hecate). 2.8.0 Akilli Menzil aciksa ve bu
+     * NPC turu icin onerilen menzil varsa tablo yerine o kullanilir (tabloya yazilmaz).
+     */
     double tableRadius(Npc n) {
-        double r = n.getInfo().getRadius();
+        double r = smartRadius(n);
         if (Context.hp(n) < 0.25 && n.getInfo().hasExtraFlag(NpcFlag.AGGRESSIVE_FOLLOW)) r *= 0.75;
         return r + abilityBonus();
+    }
+
+    /** NPC listesindeki menzil (Akilli Menzil uygulanmadan). */
+    double rawTableRadius(Npc n) {
+        return n.getInfo().getRadius();
+    }
+
+    /** 2.8.0 Akilli Menzil: acikken onerilen menzil (yoksa tablo). */
+    double smartRadius(Npc n) {
+        double r = n.getInfo().getRadius();
+        if (!cp.context.config.COMBAT.SMART_RANGE) return r;
+        int s = cp.suggested(n.getInfo().getName());
+        return s > 0 ? s : r;
+    }
+
+    /** Durum / log icin: " (onerilen 615)" ya da " (akilli menzil 615)"; oneri yoksa bos. */
+    String rangeNote(Npc n) {
+        int s = cp.suggested(n.getInfo().getName());
+        if (s <= 0) return "";
+        return cp.context.config.COMBAT.SMART_RANGE ? " (akıllı menzil " + s + ")" : " (önerilen " + s + ")";
     }
 
     /** Ogrenilmis lazer siniri (oyunun "menzil disi" dedigi mesafe) icerisi: olcumdur, ayardan bagimsiz. Yoksa sinirsiz. */
@@ -1372,7 +1416,8 @@ public final class CombatJob implements PlusModule.Job {
      */
     Location smartSpotPoint(Npc n, Location predicted, double radius, long now) {
         double a = predicted.angleTo(cp.context.hero);
-        double c = blindAngle(n, predicted);
+        double side = sideCenter(n, predicted); // 2.8.0 Portal / Dusman tarafi seciliyse o yan
+        double c = !Double.isNaN(side) ? side : blindAngle(n, predicted);
         if (Double.isNaN(c)) c = Double.isNaN(smartCenter) ? a : smartCenter;
         if (Double.isNaN(smartCenter)) smartCenter = c;
         else {
@@ -1389,6 +1434,11 @@ public final class CombatJob implements PlusModule.Job {
         }
         if (Math.abs(rel) > half + 0.2) smartDir = rel > 0 ? -1 : 1; // noktaya en kisa yonden
         double sb = cp.safeBand(npcName, bandMin(n, radius), Math.min(radius, bandMax(n, radius)));
+        // 2.8.0: daha yakin mesafeler de aranir (menzilin %55'ine kadar); yeterli veri (30 sn) varsa ve hasar en az %20
+        // azsa o bant secilir.
+        double[] near = cp.bandBest(npcName, radius * 0.55, bandMin(n, radius), 30);
+        double[] cur = cp.bandBest(npcName, bandMin(n, radius), Math.min(radius, bandMax(n, radius)), 10);
+        if (near != null && (cur == null || near[1] < cur[1] * 0.8)) sb = near[0];
         double rT = fleePrep(n, sb > 0 ? sb : radius * 0.95, radius);
         double r = fixR(predicted, rT, radius);
         double step = Math.min(arcStep(r), 0.15);
@@ -1409,16 +1459,24 @@ public final class CombatJob implements PlusModule.Job {
      * Mekik: NPC'nin onunde (ogrenilen az hasarli taraf) duz bir kiris uzerinde gidip gelinir. Kiris NPC'den menzilin
      * %85'i uzakta, uclari menzilin %98'inde; yay yerine duz gidildigi icin donuslerde hiz kaybi azdir.
      */
+    /** 2.8.0 Mekik'in kendi merkezi (Akilli Konum'un merkezini / kor noktayi kullanmaz). */
+    double shuttleCenter = Double.NaN;
+
     Location shuttlePoint(Npc n, Location predicted, double radius, long now) {
-        double c = blindAngle(n, predicted);
-        double a = predicted.angleTo(cp.context.hero);
-        if (Double.isNaN(c)) c = Double.isNaN(smartCenter) ? a : smartCenter;
-        if (Double.isNaN(smartCenter)) smartCenter = c;
-        else {
-            double diff = CombatLogic.norm(c - smartCenter);
+        // 2.8.0: cizgi NPC'nin gemiye en yakin yaninda (Sag / Alt / Sol / Ust) kurulur, 4 sn'de bir komsu yana gecer;
+        // Portal / Dusman tarafi seciliyse o yanda. Gemi cizgiye rastgele sag ya da sol uctan baslar.
+        double heroAngle = Math.atan2(cp.context.hero.getY() - predicted.getY(), cp.context.hero.getX() - predicted.getX());
+        double side = sideCenter(n, predicted);
+        double c = !Double.isNaN(side) ? side : shuttleCycle.angle(heroAngle, now, npcName);
+        if (Double.isNaN(shuttleCenter)) {
+            shuttleCenter = c;
+            shuttleEnd = ThreadLocalRandom.current().nextBoolean() ? 1 : -1;
+        } else {
+            double diff = CombatLogic.norm(c - shuttleCenter);
             double max = Math.toRadians(CENTER_SLEW_DEG) * 0.1;
-            smartCenter += Math.abs(diff) <= max ? diff : Math.signum(diff) * max;
+            shuttleCenter += Math.abs(diff) <= max ? diff : Math.signum(diff) * max;
         }
+        double smartCenter = shuttleCenter; // asagidaki cizgi hesabi bu merkezle (alan golgelenir)
         double rEnd = fleePrep(n, radius * 0.98, radius);
         double half = Math.acos(Math.min(0.99, 0.85 * radius / Math.max(1, rEnd)));
         Location end = Location.of(predicted, smartCenter + shuttleEnd * half, rEnd);
@@ -1715,14 +1773,28 @@ public final class CombatJob implements PlusModule.Job {
         boolean finish = Context.hp(n) * 100 < ws.FINISH_HP;
         double r = finish ? in : mid - amp * Math.cos(waves * next); // cos: cukurlar ve tepeler sirayla
         Location p = Location.of(predicted, next, r);
-        // Yon sadece engelde ya da NPC'nin onune DAHA COK girilecekse cevrilir, en sik 1 sn'de bir (eskiden NPC'nin
-        // onundeyken iki yon de "on" sayilip her tik cevriliyor, gemi yerinde titriyordu).
-        boolean deeper = rearOf(n, predicted, next) && !rearOf(n, predicted, a); // 2.5.0: arkaya gecmemek icin
-        if ((!cp.context.move.canMove(p) || deeper) && now - waveFlipAt > CombatLogic.FLIP_MIN_MS) {
-            waveFlipAt = now;
-            waveDir = -waveDir;
-            next = a + waveDir * step;
-            p = Location.of(predicted, next, finish ? in : mid - amp * Math.cos(waves * next));
+        // 2.8.0: Dalga'da gemi NPC'yi vururken hic durmaz: eskiden engelde / NPC'nin arkasina gecerken yon 180 derece
+        // cevriliyordu (donuste gemi duruyordu). Artik arkadan durmadan gecilir; engelde once yaricap (ic / dis uc)
+        // denenir, o da olmazsa en yakin gidilebilir nokta. Sadece hicbiri olmazsa (kapali kose) yon cevrilir.
+        if (!cp.context.move.canMove(p)) {
+            Location alt = null;
+            for (double rr : new double[]{in, out, mid}) {
+                Location c = Location.of(predicted, next, rr);
+                if (cp.context.move.canMove(c)) {
+                    alt = c;
+                    break;
+                }
+            }
+            if (alt != null) return alt;
+            if (now - waveFlipAt > CombatLogic.FLIP_MIN_MS * 3) {
+                Location back = Location.of(predicted, a - waveDir * step, r);
+                if (cp.context.move.canMove(back)) {
+                    waveFlipAt = now;
+                    waveDir = -waveDir;
+                    return back;
+                }
+            }
+            return validOr(predicted, p, null, radius);
         }
         return p;
     }
@@ -1735,11 +1807,14 @@ public final class CombatJob implements PlusModule.Job {
 
     // ------------------------------------------------------------ Kartal Pencesi
 
-    /** Bayragi tutulan NPC'ler: id -> son isabet zamani; id -> ilk alinma zamani. */
-    final java.util.Map<Integer, Long> clawHit = new java.util.HashMap<>();
-    final java.util.Map<Integer, Long> clawSince = new java.util.HashMap<>();
+    /**
+     * Bayragi tutulan NPC'ler: id -> son isabet zamani; id -> ilk alinma zamani. 2.8.0: CombatLogic'te (is
+     * yenilense de - her kesimden / bulucudan sonra - unutulmaz, yenileme atisi surer).
+     */
+    final java.util.Map<Integer, Long> clawHit;
+    final java.util.Map<Integer, Long> clawSince;
     /** Tutma suresi dolup birakilan NPC'ler: bu zamana kadar yeniden pencelenmez (birak-al dongusu olmasin). */
-    final java.util.Map<Integer, Long> clawReleased = new java.util.HashMap<>();
+    final java.util.Map<Integer, Long> clawReleased;
     int clawTarget = -1;
     static final long CLAW_FAIL_MS = 10_000;
     long clawStart;
@@ -1779,10 +1854,9 @@ public final class CombatJob implements PlusModule.Job {
             return null;
         }
         boolean rival = rivalNear();
-        if (c.RIVAL_ONLY && !rival) {
-            if (!clawHit.isEmpty() || clawTarget >= 0) clawClear("yakinda rakip oyuncu kalmadi");
-            return null;
-        }
+        // 2.8.0: rakip gidince tutulan bayraklar birakilmaz (sureleri dolana kadar yenilenir); sadece yeni bayrak alinmaz.
+        boolean noNew = c.RIVAL_ONLY && !rival;
+        if (noNew && clawHit.isEmpty() && clawTarget < 0) return null;
         // Suren bayrak atisi
         if (clawTarget >= 0) {
             Npc o = cp.context.findNpc(clawTarget);
@@ -1833,7 +1907,7 @@ public final class CombatJob implements PlusModule.Job {
         }
         // Yeni bayrak: ayni turden, secilebilir, baskasinin olmayan, yakin zamanda birakilmamis NPC
         clawReleased.values().removeIf(t -> t < now);
-        if (clawHit.size() < c.COUNT - 1) {
+        if (!noNew && clawHit.size() < c.COUNT - 1) {
             Npc best = null;
             double bd = c.RANGE;
             for (Npc o : cp.context.ents.getNpcs()) {
@@ -2034,8 +2108,9 @@ public final class CombatJob implements PlusModule.Job {
      */
     Location boomerangPoint(Npc n, Location predicted, double radius, long now) {
         double a = predicted.angleTo(cp.context.hero);
-        double c = blindAngle(n, predicted);
-        if (Double.isNaN(c)) c = Double.isNaN(crescentCenter) ? a : crescentCenter;
+        // 2.8.0: Bumerang her zaman NPC'nin altindan (kor noktayi kullanmaz); Portal / Dusman tarafi seciliyse o yan.
+        double side = sideCenter(n, predicted);
+        double c = !Double.isNaN(side) ? side : Math.toRadians(90) + Math.PI;
         crescentCenter = c;
         double cap = outerCap(n, radius, 1.05);
         double rMid = (radius * 0.97 + Math.max(radius * 0.99, cap)) / 2;
@@ -2066,60 +2141,90 @@ public final class CombatJob implements PlusModule.Job {
     }
 
     /** Menzil Kilidi bandi: {alt, ust} (menzil disi mesaji geldiyse bant %5 adimlarla iceri kayar). */
+    /**
+     * 2.8.0 Menzil Kilidi bandi: alt ucu ASLA tablodaki menzilin altina inmez (Akilli Menzil aciksa onerilen menzil).
+     * "Menzil disi" mesajinda bant iceri kaydirilmaz (eskiden %15'e kadar iceri, alt uc %90'a iniyordu); sadece uyari.
+     */
     double[] lockBand(Npc n, double radius) {
         BotPlusConfig.LockSettings ls = cp.context.config.COMBAT.LOCK;
         BotPlusConfig.LockWidth w = ls.WIDTH == null ? BotPlusConfig.LockWidth.MEDIUM : ls.WIDTH;
-        double cap = outerCap(n, radius, Math.max(1.0, ls.MAX_OUT / 100.0));
-        double hi = Math.min(radius * w.hi, cap) - radius * lockShift;
-        double lo = radius * w.lo - radius * lockShift;
-        // Olcum yoksa (cap = menzil) bant menzil icine kaydirilir: dis uc menzil sinirinda kalir.
-        if (lo > hi - radius * 0.02) lo = hi - radius * (w.hi - w.lo);
-        lo = Math.max(radius * 0.9, lo);
-        return new double[]{lo, Math.max(lo + 5, hi)};
+        double floor = tableRadius(n); // vuramazsa kisma (hitScale) da bu tarzda uygulanmaz
+        double cap = outerCap(n, floor, Math.max(1.0, ls.MAX_OUT / 100.0));
+        double lo = Math.max(floor, floor * w.lo);
+        double hi = Math.max(lo + 5, Math.min(floor * w.hi, Math.max(cap, lo + 5)));
+        return new double[]{lo, hi};
+    }
+
+    /** 2.8.0: dort yan (Sag, Alt, Sol, Ust) arasinda donus: en yakin yandan baslanir, 4 sn'de bir komsu yana gecilir. */
+    static final class SideCycle {
+        static final long SIDE_MS = 4000;
+        int idx = -1;
+        long at;
+
+        void reset() {
+            idx = -1;
+        }
+
+        /** Location.of acisi (gemi NPC'nin o yaninda). heroAngle: NPC'den gemiye yon (radyan). */
+        double angle(double heroAngle, long now, String who) {
+            if (idx < 0) {
+                double deg = Math.toDegrees(heroAngle);
+                idx = (int) Math.floorMod(Math.round(deg / 90.0), 4);
+                at = now;
+            } else if (now - at >= SIDE_MS) {
+                // Komsu yan: Sag/Sol -> Alt ya da Ust, Alt/Ust -> Sag ya da Sol (rastgele).
+                idx = (idx + (ThreadLocalRandom.current().nextBoolean() ? 1 : 3)) % 4;
+                at = now;
+                Log.d("COMBAT", who + " yan degisti: " + CombatLogic.ABS[idx * 2]);
+            }
+            return Math.toRadians(idx * 90) + Math.PI;
+        }
+    }
+
+    final SideCycle lockCycle = new SideCycle();
+    final SideCycle shuttleCycle = new SideCycle();
+
+    /**
+     * 2.8.0 Portal Tarafinda Kal / Dusmandan Uzak Tarafta Kal: tarzin merkezi yerine kullanilacak aci (Location.of
+     * acisi), yoksa NaN. Dusman tarafi once: haritada dusman oyuncu varken NPC gemi ile dusman arasinda kalir.
+     */
+    double sideCenter(Npc n, Location predicted) {
+        BotPlusConfig.Combat cc = cp.context.config.COMBAT;
+        try {
+            if (cc.ENEMY_SIDE) {
+                Player e = cp.context.nearestEnemy(predicted);
+                if (e != null && e.distanceTo(predicted) < 5000) return e.angleTo(predicted);
+            }
+            if (cc.PORTAL_SIDE) {
+                Location port = harborPortal(n);
+                if (port != null) return predicted.angleTo(port);
+            }
+        } catch (RuntimeException ignored) {
+        }
+        return Double.NaN;
     }
 
     /**
-     * Menzil Kilidi (Bant Kaymasi): gemi bantta (ornek menzilin %101-%108'i) kilitlenir, hic durmaz. Bant boyunca
-     * kayar; 2 sn'de bir alinan hasar olculur: artiyorsa yon cevrilir, azaliyorsa salinim ortasi buraya kayar. Salinim
-     * en az "Salinim Genisligi" kadar; bant icinde hafif iceri-disari dalgalanma; dis ucu gecince sert iceri duzeltme.
-     * Hasar alinca (Menzilden Cik yerine) bandin dis ucuna cekilir, ates kesilmez.
+     * Menzil Kilidi (2.8.0 Sinirda Salinim): gemi tablodaki menzilin hemen disindaki bantta, NPC'nin bir yaninda
+     * (en yakin yandan baslar, 4 sn'de bir komsu yana gecer; Portal / Dusman tarafi seciliyse o yanda) "Salinim
+     * Genisligi" kadar gidip gelir. Salinim uclarinda disariya dogru kavisle donulur: gemi hic durmaz, menzilin
+     * icine hic girmez (yay kirisi telafi edilir). Hasar alinca ates kesilmeden bandin dis ucuna cekilir.
      */
     Location lockPoint(Npc n, Location predicted, double radius, long now) {
         BotPlusConfig.LockSettings ls = cp.context.config.COMBAT.LOCK;
         double[] band = lockBand(n, radius);
         double lo = band[0], hi = band[1];
         double a = predicted.angleTo(cp.context.hero);
-        if (Double.isNaN(lockCenter)) {
-            double b = blindAngle(n, predicted);
-            lockCenter = Double.isNaN(b) ? a : b;
-            lockEvalAt = now;
-            lockLastRate = -1;
-        }
+        double heroAngle = Math.atan2(cp.context.hero.getY() - predicted.getY(), cp.context.hero.getX() - predicted.getX());
+        double side = sideCenter(n, predicted);
+        lockCenter = !Double.isNaN(side) ? side : lockCycle.angle(heroAngle, now, npcName);
         double swing = Math.toRadians((ls.SWING == null ? BotPlusConfig.LockSwing.MEDIUM : ls.SWING).deg) / 2;
-        // Hasara gore yon: 2 sn'de bir.
-        if (now - lockEvalAt >= 2000 && heroRate.known()) {
-            double rate = heroRate.perSec();
-            if (lockLastRate >= 0 && rate > lockLastRate * 1.15 + 50 && now - lockFlipAt > 1500) {
-                lockDir = -lockDir;
-                lockFlipAt = now;
-                Log.d("COMBAT", npcName + " menzil kilidi: hasar artti (" + Math.round(lockLastRate) + " -> " + Math.round(rate) + "/sn), geri kayiliyor");
-            } else if (lockLastRate >= 0 && rate < lockLastRate * 0.85) {
-                lockCenter += CombatLogic.norm(a - lockCenter) * 0.3; // iyi bolge: salinim ortasi buraya kayar
-            }
-            lockLastRate = rate;
-            lockEvalAt = now;
-        }
         double rel = CombatLogic.norm(a - lockCenter);
         if (rel * lockDir > swing && now - lockFlipAt > 800) {
             lockDir = -lockDir;
             lockFlipAt = now;
         }
         if (Math.abs(rel) > swing + 0.3) lockDir = rel > 0 ? -1 : 1;
-        // Menzil disi mesajindan sonra 20 sn sessizse bant geri kayar.
-        if (lockShift > 0 && now - lockShiftAt > 20_000) {
-            lockShift = Math.max(0, lockShift - 0.05);
-            lockShiftAt = now;
-        }
         double mid = (lo + hi) / 2, amp = (hi - lo) / 2 * 0.6;
         lockPhase += 0.25;
         double rT = mid + amp * Math.sin(lockPhase);
@@ -2127,15 +2232,18 @@ public final class CombatJob implements PlusModule.Job {
         boolean hurt = heroRate.known() && CombatLogic.total(cp.context.hero) / CombatLogic.maxTotal(cp.context.hero) < 0.9
                 && heroRate.perSec() / CombatLogic.maxTotal(cp.context.hero) * 100 >= 1.5;
         if (hurt) rT = hi;
-        rT = Math.min(hi, fleePrep(n, rT, radius));
+        rT = Math.max(lo, Math.min(hi, fleePrep(n, rT, radius))); // kacisi onlemede de bandin altina inilmez
         double dNow = cp.context.hero.distanceTo(predicted);
-        // Dis ucu gecince sert iceri (menzil disina dusmesin).
-        double r = dNow > hi ? Math.max(lo, rT - (dNow - hi) * 1.5) : fixR(predicted, rT, radius);
-        r = Math.max(100, r);
+        // Dis ucu gecince iceri duzeltme (bandin alt ucuna kadar); icerideyse disari.
+        double r = dNow > hi ? Math.max(lo, rT - (dNow - hi) * 1.5) : Math.max(lo, fixR(predicted, rT, radius));
         double step = arcStep(r);
-        Location p = Location.of(predicted, a + lockDir * step, r);
+        // Dis donus: salinim ucunda yon degisince kisa sure disari kavis (durup geri donulmez, iceri taşilmaz).
+        if (now - lockFlipAt < SLING_MS * 2) r = Math.min(r + SLING_OUT * 2, Math.max(hi, lo + SLING_OUT * 2));
+        // Yay kirisi telafisi: iki nokta arasi duz gidiste orta nokta r*cos(adim/2)'ye iner; bant altina inmesin.
+        double rUse = r / Math.max(0.5, Math.cos(Math.min(step, 0.6) / 2));
+        Location p = Location.of(predicted, a + lockDir * step, rUse);
         if (!cp.context.move.canMove(p)) {
-            Location q = Location.of(predicted, a - lockDir * step, r);
+            Location q = Location.of(predicted, a - lockDir * step, rUse);
             if (cp.context.move.canMove(q) && now - lockFlipAt > 800) {
                 lockDir = -lockDir;
                 lockFlipAt = now;
@@ -2146,11 +2254,12 @@ public final class CombatJob implements PlusModule.Job {
         return p;
     }
 
-    /** Menzil Kilidi: oyun "menzil disi" dedi, bant %5 iceri (en fazla %15). */
+    /** 2.8.0 Menzil Kilidi: oyun "menzil disi" dedi: bant iceri KAYDIRILMAZ, sadece uyari (60 sn'de bir). */
     void lockOutOfRange(long now) {
-        lockShift = Math.min(0.15, lockShift + 0.05);
         lockShiftAt = now;
-        Log.i("COMBAT", npcName + " menzil kilidi: menzil disi mesaji, bant %" + Math.round(lockShift * 100) + " iceri kaydi");
+        int sug = cp.suggested(npcName);
+        Log.every("lockoor" + npcName, 60_000, "COMBAT", npcName + " menzil kilidi: listedeki menzilde menzil disi geliyor, menzil"
+                + " dusurulmuyor; tablo menzili yuksek olabilir" + (sug > 0 ? " (onerilen " + sug + ")" : ""));
     }
 
     /**
@@ -2246,16 +2355,16 @@ public final class CombatJob implements PlusModule.Job {
                 centerChangedAt = now;
             }
         }
-        // Liman: yay ortasi NPC'nin atlanabilir portal tarafi (portal NPC'ye Liman Siniri'ndan yakinsa).
-        if (st == BotPlusConfig.CombatStyle.HARBOR) {
-            Location port = harborPortal(n);
-            if (port != null) {
-                // 2.5.0: NPC'nin onu ile portal tarafinin ortak bolgesi; ikisi 90 dereceden fazla ayriysa on.
-                double pa = predicted.angleTo(port);
-                double f = frontAngle(n, predicted);
-                if (Double.isNaN(f)) centerGoal = pa;
+        // 2.8.0 Portal Tarafinda Kal (eski Liman tarzi) / Dusmandan Uzak Tarafta Kal: yay ortasi o yana kayar.
+        if (cp.context.config.COMBAT.ENEMY_SIDE || cp.context.config.COMBAT.PORTAL_SIDE) {
+            double sideA = sideCenter(n, predicted);
+            if (!Double.isNaN(sideA)) {
+                // 2.5.0: NPC'nin onu ile portal tarafinin ortak bolgesi; ikisi 90 dereceden fazla ayriysa on (dusman
+                // tarafinda on kullanilmaz: dusmandan uzak kalmak once).
+                double f = cp.context.config.COMBAT.ENEMY_SIDE && cp.context.nearestEnemy(predicted) != null ? Double.NaN : frontAngle(n, predicted);
+                if (Double.isNaN(f)) centerGoal = sideA;
                 else {
-                    double diff = CombatLogic.norm(pa - f);
+                    double diff = CombatLogic.norm(sideA - f);
                     centerGoal = Math.abs(diff) <= Math.PI / 2 ? f + diff / 2 : f;
                 }
             }
@@ -2508,19 +2617,15 @@ public final class CombatJob implements PlusModule.Job {
             return;
         }
         oorQuietMs = 0;
-        if (now - oorFirstAt > 4000) {
-            oorFirstAt = now;
-            oorCount = 0;
-        }
-        if (++oorCount < 2) return;
-        oorCount = 0;
-        oorFirstAt = now;
-        if (localScale <= CombatLogic.OOR_MIN_SCALE + 0.001) return;
-        localScale = Math.max(CombatLogic.OOR_MIN_SCALE, localScale - 0.05);
-        cp.scale.put(npcName, localScale);
-        scaleEvidence = true;
-        Log.i("COMBAT", Log.npc(n) + " menzil disi (uzaklik " + (int) d + "): saldiri mesafesi %"
-                + Math.round(localScale * 100) + " (" + (int) attackRadius(n) + "), " + npcName + " icin hatirlandi");
+        // 2.8.0: saldiri mesafesi kendiliginden kucultulmez (eskiden 2 mesajda %5 dusup oturum boyu kaliyordu).
+        // Mesajin geldigi uzaklik menzil onerisi icin kaydedilir (NPC turu basina; tabloya yazilmaz).
+        double table = rawTableRadius(n);
+        cp.lastTable.put(npcName, (int) table);
+        if (d >= table * 0.75 && d <= table * 1.3) cp.recordOutOfRange(npcName, d);
+        int sug = cp.suggested(npcName);
+        if (sug > 0 && Log.due("oorsug" + npcName, 60_000))
+            Log.i("COMBAT", npcName + " menzil disi (uzaklik " + (int) d + "): tablo menzili " + (int) table
+                    + " yuksek olabilir, onerilen " + sug + (cp.context.config.COMBAT.SMART_RANGE ? " (Akilli Menzil acik: " + sug + " kullaniliyor)" : ""));
     }
 
     // ------------------------------------------------------------ hasar almayan hedef
@@ -2818,8 +2923,11 @@ public final class CombatJob implements PlusModule.Job {
             boxStart = now;
             Log.d("COMBAT", "kutu: " + box.getTypeName() + " " + (int) cp.context.hero.distanceTo(box));
         }
-        if (now - boxStart > CombatLogic.BOX_MAX_MS || boxTries >= CombatLogic.BOX_TRIES) {
-            Log.d("COMBAT", box.getTypeName() + " alinamadi (" + boxTries + " deneme)");
+        // 2.8.0: deneme sayisi kutu basina (is yenilense de ayni kutuya bastan 3 kez tiklanmaz).
+        int tries = Math.max(boxTries, cp.boxTriesById.getOrDefault(box.getId(), 0));
+        if (now - boxStart > CombatLogic.BOX_MAX_MS || tries >= CombatLogic.BOX_TRIES) {
+            Log.d("COMBAT", box.getTypeName() + " alinamadi (" + tries + " deneme)");
+            cp.badBoxes.put(box.getId(), now + 60_000);
             box = null;
             deathLoc = null;
             return continueWith(nextNpc());
@@ -2835,15 +2943,54 @@ public final class CombatJob implements PlusModule.Job {
         return true;
     }
 
+    /** 2.8.0: kutuya bu yakindan tiklanir (gemi durdurulmadan; tiklama gemiyi kutunun ustune goturur). */
+    static final double COLLECT_CLICK_DIST = 400;
+
     void collect(Box b, long now) {
         double d = cp.context.hero.distanceTo(b);
-        if (d < 250) {
-            cp.context.stop();
+        // 2.8.0: listede ms olan kutu: ustune gelince gemi durur, o kadar beklenir (0 ms: asagida, durmadan).
+        if (Context.boxWait(b) > 0) {
+            if (d < 250) {
+                cp.context.stop();
+                if (cp.context.collect(b)) {
+                    boxTries++;
+                    cp.boxTriesById.merge(b.getId(), 1, Integer::sum);
+                    if (cp.boxTriesById.size() > 200) cp.boxTriesById.clear();
+                    boxUntil = now + cp.context.collectWaitLeft();
+                }
+            } else if (!cp.context.collectBusy()) cp.context.travelTo(b);
+            return;
+        }
+        if (d < COLLECT_CLICK_DIST) {
+            // 2.8.0: eskiden 250'de gemi durdurulup tiklaniyordu (dur-kalk). Artik durdurulmaz: kutuya giderken tiklanir,
+            // oyun gemiyi kutunun ustune goturup alir. Toplama surerken baska yere yurunmez (toplama kesilmesin).
             if (cp.context.collect(b)) {
                 boxTries++;
+                cp.boxTriesById.merge(b.getId(), 1, Integer::sum);
+                if (cp.boxTriesById.size() > 200) cp.boxTriesById.clear();
                 boxUntil = now + cp.context.collectWaitLeft();
-            }
+            } else if (!cp.context.collectBusy()) cp.context.travelTo(b);
         } else if (!cp.context.collectBusy()) cp.context.travelTo(b); // toplama suruyorken yurunmez (toplama kesilmesin)
+    }
+
+    /**
+     * 2.8.0: kutu gidis yonunun gerisinde mi (geri donulmez). Yon: siradaki NPC ya da gidilen nokta; yon yoksa false.
+     * Cok yakindaki (150) kutu her zaman alinir.
+     */
+    boolean behind(Box b, Npc next) {
+        double d = cp.context.hero.distanceTo(b);
+        if (d < 150) return false;
+        eu.darkbot.api.game.other.Locatable dir = next;
+        if (dir == null) {
+            Location dest = cp.context.move.getDestination();
+            if (dest == null || cp.context.hero.distanceTo(dest) < 200) return false;
+            dir = dest;
+        }
+        double hx = cp.context.hero.getX(), hy = cp.context.hero.getY();
+        double ax = dir.getX() - hx, ay = dir.getY() - hy, bx = b.getX() - hx, by = b.getY() - hy;
+        double la = Math.hypot(ax, ay), lb = Math.hypot(bx, by);
+        if (la < 1 || lb < 1) return false;
+        return (ax * bx + ay * by) / (la * lb) < 0; // 90 dereceden fazla: arkada
     }
 
     /** Olen NPC'nin dusurdugu kutu. */
@@ -2867,7 +3014,7 @@ public final class CombatJob implements PlusModule.Job {
         Box best = null;
         double bestCost = Double.MAX_VALUE;
         for (Box b : cp.context.ents.getBoxes()) {
-            if (!cp.boxOk(b)) continue;
+            if (!cp.boxOk(b) || behind(b, next)) continue; // 2.8.0: arkada kalan kutuya donulmez
             double d = cp.context.hero.distanceTo(b);
             double detour = next == null ? d : d + b.distanceTo(next) - cp.context.hero.distanceTo(next);
             if (d > 600 && detour > CombatLogic.BOX_DETOUR) continue;
@@ -2884,7 +3031,24 @@ public final class CombatJob implements PlusModule.Job {
      * NPC'nin IGNORE_BOXES isareti yoksa kutuya gidilir; ates ve kilit surer.
      */
     Location sideBox(Npc n, Location p, long now) {
-        if (now < boxUntil && box != null && box.isValid()) return Location.of(cp.context.hero.getX(), cp.context.hero.getY());
+        // 2.8.0 Dalga: gemi NPC'yi vururken hic durmaz; kutu sadece dalganin yolundaysa (200 icinde) gecerken tiklanir.
+        if (style() == BotPlusConfig.CombatStyle.WAVE) {
+            if (now < boxUntil || !cp.collectBoxes() || Context.hp(n) < 0.25) return p;
+            for (Box b : cp.context.ents.getBoxes()) {
+                // Dalga durmaz: sadece listede 0 ms olan kutular (ms olan kutu icin durmak gerekir).
+                if (!cp.boxOk(b) || cp.context.hero.distanceTo(b) > 200 || Context.boxWait(b) > 0) continue;
+                if (cp.context.collect(b)) {
+                    box = b;
+                    boxUntil = now + cp.context.collectWaitLeft();
+                }
+                break;
+            }
+            return p;
+        }
+        // 2.8.0: toplama surerken 0 ms kutuda gemi durdurulmaz, kutunun ustune gidilir; ms olan kutuda ustunde beklenir.
+        if (now < boxUntil && box != null && box.isValid())
+            return Context.boxWait(box) > 0 && cp.context.hero.distanceTo(box) < 250 ? Location.of(cp.context.hero.getX(), cp.context.hero.getY())
+                    : Location.of(box.getX(), box.getY());
         // Dovus sirasinda kutuya sadece "Once Kutu" modunda gidilir (NPC varken kutuya gidip NPC unutulmaz).
         // "NPC'ye giderken yoldaki kutulari al": NPC'ye yaklasirken rotanin 300 yakinindaki kutu alinir.
         boolean boxFirstMode = cp.context.botMode() == BotPlusConfig.BotMode.BOX_NPC;
@@ -2900,6 +3064,7 @@ public final class CombatJob implements PlusModule.Job {
             double d = cp.context.hero.distanceTo(b);
             if (d >= bd) continue;
             if (route && (d > toNpc || segDist(cp.context.hero, n, b) > 300)) continue;
+            if (!route && behind(b, n)) continue; // 2.8.0 Yakindaki kutu: NPC'ye giderken arkada kalan kutuya donulmez
             if (n.getInfo().hasExtraFlag(NpcFlag.IGNORE_BOXES) && n.distanceTo(b) > Math.min(800, n.getInfo().getRadius() * 2)) continue;
             bd = d;
             best = b;
@@ -2907,12 +3072,22 @@ public final class CombatJob implements PlusModule.Job {
         if (best == null) return p;
         if (Log.dDue("sidebox", 3000)) Log.i("COMBAT", "dovus sirasinda kutu: " + best.getTypeName() + " " + (int) bd);
         cp.boxFocus(best, now);
-        if (bd < 250) {
+        boolean waitBox = Context.boxWait(best) > 0;
+        if (waitBox && bd < 250) {
+            // 2.8.0: listede ms olan kutu: gemi durur, tiklanir, o kadar beklenir.
+            cp.context.stop();
             if (cp.context.collect(best)) {
                 box = best;
                 boxUntil = now + cp.context.collectWaitLeft();
             }
             return Location.of(cp.context.hero.getX(), cp.context.hero.getY());
+        }
+        if (!waitBox && bd < COLLECT_CLICK_DIST) {
+            // 2.8.0: 0 ms kutu durdurulmadan tiklanir; gemi kutunun ustune gider (oyun toplarken orada tutar).
+            if (cp.context.collect(best)) {
+                box = best;
+                boxUntil = now + cp.context.collectWaitLeft();
+            }
         }
         return Location.of(best.getX(), best.getY());
     }
@@ -3070,7 +3245,12 @@ public final class CombatJob implements PlusModule.Job {
                 // Bir kutu toplanirken (baska is / yeni dovus isi de olsa) yerinde beklenir, tiklanmaz, yurunmez.
                 if (!cp.context.collectBusy()) {
                     double d = cp.context.hero.distanceTo(b);
-                    if (d < 250) {
+                    // 2.8.0: 0 ms kutu durmadan (400'de tiklanir, ustunden gecilir); ms olan kutuda gemi durup bekler.
+                    boolean noWait = Context.boxWait(b) <= 0;
+                    if (noWait && d < COLLECT_CLICK_DIST) {
+                        if (cp.context.collect(b)) boxUntil = now + cp.context.collectWaitLeft();
+                        cp.context.moveTo(b);
+                    } else if (!noWait && d < 250) {
                         cp.context.stop();
                         if (cp.context.collect(b)) boxUntil = now + cp.context.collectWaitLeft();
                     } else cp.context.travelTo(b);
